@@ -1,15 +1,15 @@
 # encrypt-vault
 
-A minimalist self-hosted file server where the server **never sees your plaintext data**. All encryption and decryption happens entirely in the browser using the native [Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API) — no libraries, no dependencies.
+A minimalist self-hosted file server where the server **never sees your plaintext data**. All encryption and decryption happens entirely in the browser using the native [Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API) — no server-side libraries, no third-party JS.
 
 ## How it works
 
 ```
-Browser                                 Server
-──────────────────────────────          ──────────────────────────
-Password → PBKDF2 → AES-256-GCM key    Stores only encrypted blobs
-File → encrypt in browser → upload ──► POST /upload  →  *.enc file
-GET /file/<uuid> ◄─────────────────    Serves raw bytes, no decryption
+Browser                                    Server
+─────────────────────────────────          ────────────────────────────────
+Password → Argon2id → AES-256-GCM key     Stores only encrypted blobs
+File → encrypt in browser → upload ──►    POST /upload  →  *.enc file
+GET /file/<uuid> ◄──────────────────      Serves raw bytes, no decryption
 Decrypt in browser → display
 ```
 
@@ -17,6 +17,7 @@ Decrypt in browser → display
 - Your password never leaves your device
 - Wrong password → `OperationError` from the browser's crypto engine — no oracle
 - `Cache-Control: no-store` on every response prevents browser disk caching
+- Bearer token authentication on all API endpoints (auto-generated on first run)
 
 ## Security properties
 
@@ -24,29 +25,40 @@ Decrypt in browser → display
 |---|---|
 | Number of files | Filenames or MIME types (encrypted in metadata) |
 | Approximate file size bucket | Exact file sizes (padded to power-of-2 buckets) |
-| Upload/access timestamps (if `noatime` not set) | File contents |
+| On-disk timestamps (randomized on upload) | File contents |
 | — | Your password |
 
-**Encryption:** AES-256-GCM (authenticated — detects tampering)  
-**Key derivation:** PBKDF2-SHA256, 210,000 iterations, 16-byte random salt per file  
-**Metadata:** encrypted separately before the file data; decrypted first to fail fast on wrong passwords  
-**Size obfuscation:** files padded to the nearest power-of-2 bucket (≤128 MB) or 16 MB boundary (>128 MB) before encryption
+**Encryption:** AES-256-GCM with per-file UUID as `additionalData` — prevents ciphertext substitution  
+**Key derivation:** Argon2id (64 MiB memory, 3 iterations) — memory-hard; GPU cracking ~100,000× slower than PBKDF2  
+**Legacy files (v1):** decrypted with PBKDF2-SHA256, 210,000 iterations — full backward compatibility  
+**Metadata:** encrypted separately; decrypted first to fail fast on wrong passwords  
+**Size obfuscation:** files padded to the nearest power-of-2 bucket (≤128 MB) or 16 MB boundary  
+**Authentication:** bearer token in `.api-token` (gitignored), injected into page at serve time  
+**Secure delete:** files overwritten with random bytes + fsync before unlink  
+**Session:** 60-second inactivity lock; manual "Lock Now" button  
+**Password enforcement:** minimum 60 bits of entropy required before encryption
 
 ## Requirements
 
-- Python 3.6+ (standard library only — no pip installs needed)
-- A modern browser (Chrome 37+, Firefox 34+, Safari 11.1+)
+- Python 3.9+ (standard library only — no pip installs needed)
+- A modern browser (Chrome 67+, Firefox 60+, Safari 14+)
 
 ## Setup
 
 ```bash
 git clone https://github.com/vikarag/encrypt-vault
 cd encrypt-vault
+
+# One-time: download the Argon2 WASM library (~45 KB, vendored locally)
+curl -L https://cdn.jsdelivr.net/npm/argon2-browser@1.18.0/dist/argon2-bundled.min.js \
+  -o argon2-bundled.min.js
+
 python3 server.py
-# → Vault listening on http://localhost:9000
+# → [vault] New auth token written → .api-token
+# → [vault] Listening on http://localhost:9000
 ```
 
-Open `http://localhost:9000` in your browser.
+Open `http://localhost:9000` in your browser. The auth token is embedded in the page automatically — no manual configuration needed.
 
 ### HTTPS (required for non-localhost access)
 
@@ -185,7 +197,7 @@ sudo mount -o remount /mnt/your-drive
 
 ## Password recommendations
 
-Use a **6-word diceware passphrase**. At 210,000 PBKDF2 iterations, even a well-funded offline attack cannot crack a strong passphrase in any reasonable timeframe.
+Use a **6-word diceware passphrase**. With Argon2id (64 MiB memory cost), even a well-funded offline attack with many GPUs cannot crack a strong passphrase in any reasonable timeframe. The vault enforces a minimum of 60 bits of entropy at the UI level.
 
 ```bash
 # Generate one locally
@@ -207,14 +219,14 @@ Each `.enc` file is a self-contained binary blob:
 Offset   Len   Field
 ──────   ───   ─────────────────────────────────────────────────────────────
 0        4     Magic: "ENCF"
-4        2     Version: 0x0001 (big-endian)
+4        2     Version: 0x0001 = PBKDF2-SHA256 (legacy) | 0x0002 = Argon2id (current)
 6        2     Flags: 0x0000
 8        4     MetaLen: length of EncryptedMeta (big-endian)
-12       16    Salt (random, used for PBKDF2 key derivation)
+12       16    Salt (random, per-file KDF input)
 28       12    Meta-IV (random, AES-GCM IV for metadata block)
-40       ML    EncryptedMeta: AES-GCM(key, IV, JSON + padding) + 16-byte tag
+40       ML    EncryptedMeta: AES-GCM(key, IV, AAD=UUID, JSON + padding) + 16-byte tag
 40+ML    12    Data-IV (random, AES-GCM IV for file data)
-52+ML    N+16  EncryptedData: AES-GCM(key, IV, padded plaintext) + 16-byte tag
+52+ML    N+16  EncryptedData: AES-GCM(key, IV, AAD=UUID, padded plaintext) + 16-byte tag
 ```
 
 Encrypted metadata JSON: `{"name": "file.jpg", "mime": "image/jpeg", "size": 204800, "uploadedAt": 1745000000}`

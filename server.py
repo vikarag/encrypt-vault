@@ -2,12 +2,22 @@
 """Minimalist encrypted file server. Stores only AES-GCM encrypted blobs.
    Run: python3 server.py [--host HOST] [--port PORT]
 """
+from __future__ import annotations
 
 import argparse
+import collections
+import hmac
 import ipaddress
 import json
+import os
+import random
+import secrets
 import socket
 import ssl
+import sys
+import tempfile
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -15,17 +25,87 @@ import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-BASE = Path(__file__).parent
+BASE      = Path(__file__).parent
 FILES_DIR = BASE / "files"
 INDEX_HTML = BASE / "index.html"
+TOKEN_FILE = BASE / ".api-token"
+ARGON2_JS  = BASE / "argon2-bundled.min.js"
 
-NO_CACHE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 MAX_UPLOAD = 2 * 1024 * 1024 * 1024  # 2 GiB
-MAX_FETCH  = 500 * 1024 * 1024        # 500 MiB via URL
+MAX_FETCH  = 500 * 1024 * 1024        # 500 MiB
+CHUNK      = 65536                     # 64 KiB I/O block
 
+VAULT_TOKEN: str = ""  # set at startup by _load_token()
 
-def _safe_url(url: str):
-    """Return (ok, error_bytes). Blocks non-HTTP and private/internal addresses."""
+# ── Response headers ──────────────────────────────────────────────────────────
+
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' blob: data:; "
+    "media-src blob:; "
+    "object-src blob:"
+)
+BASE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Pragma": "no-cache",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+}
+
+# ── Token management ──────────────────────────────────────────────────────────
+
+def _load_token() -> str:
+    if TOKEN_FILE.exists():
+        t = TOKEN_FILE.read_text().strip()
+        if t:
+            return t
+    t = secrets.token_hex(32)
+    TOKEN_FILE.write_text(t + "\n")
+    TOKEN_FILE.chmod(0o600)
+    print(f"[vault] New auth token written → {TOKEN_FILE}")
+    return t
+
+# ── Rate limiter ──────────────────────────────────────────────────────────────
+
+class _RateLimiter:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._windows: dict = {}
+
+    def allow(self, key: str, limit: int, window: float = 60.0) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            dq = self._windows.setdefault(key, collections.deque())
+            while dq and dq[0] < now - window:
+                dq.popleft()
+            if not dq and key in self._windows:
+                pass  # keep for reuse
+            if len(dq) >= limit:
+                return False
+            dq.append(now)
+            return True
+
+_limiter = _RateLimiter()
+
+# ── SSRF protection ───────────────────────────────────────────────────────────
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Block all HTTP redirects so an attacker can't redirect to an internal URL."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url, code, f"Redirect to {newurl} blocked", headers, fp
+        )
+
+_SAFE_OPENER = urllib.request.build_opener(_NoRedirect())
+
+def _validate_url(url: str):
+    """Check that URL is http/https with a publicly-routable hostname.
+    DNS is resolved once here; urllib resolves again at connect time
+    (DNS rebinding window — mitigated by disabling redirects above).
+    Returns (ok, error_bytes).
+    """
     try:
         p = urllib.parse.urlparse(url)
         if p.scheme not in ("http", "https"):
@@ -43,23 +123,44 @@ def _safe_url(url: str):
     except Exception as e:
         return False, str(e).encode()
 
+# ── HTTP handler ──────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
 
     def _clean_path(self):
         return self.path.split("?")[0].split("#")[0]
 
-    def _reply(self, code, ctype, body: bytes, extra=None):
+    def _reply(self, code: int, ctype: str, body: bytes, extra: dict = None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        for k, v in NO_CACHE.items():
+        for k, v in BASE_HEADERS.items():
             self.send_header(k, v)
         if extra:
             for k, v in extra.items():
                 self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+
+    def _client_ip(self) -> str:
+        return self.client_address[0]
+
+    def _rate_check(self, bucket: str, limit: int) -> bool:
+        key = f"{self._client_ip()}:{bucket}"
+        if not _limiter.allow(key, limit):
+            self._reply(429, "text/plain", b"Too many requests", {"Retry-After": "60"})
+            return False
+        return True
+
+    def _check_auth(self) -> bool:
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            self._reply(401, "text/plain", b"Unauthorized")
+            return False
+        if not hmac.compare_digest(VAULT_TOKEN, auth[7:]):
+            self._reply(401, "text/plain", b"Unauthorized")
+            return False
+        return True
 
     def _validate_id(self, file_id: str) -> bool:
         try:
@@ -73,9 +174,32 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self._clean_path()
+
         if p in ("/", "/index.html"):
-            self._reply(200, "text/html; charset=utf-8", INDEX_HTML.read_bytes())
-        elif p == "/files":
+            if not self._rate_check("page", 30):
+                return
+            html = INDEX_HTML.read_bytes().replace(
+                b"__VAULT_TOKEN__", VAULT_TOKEN.encode(), 1
+            )
+            self._reply(200, "text/html; charset=utf-8", html,
+                        {"Content-Security-Policy": _CSP})
+            return
+
+        if p == "/argon2.js":
+            if not ARGON2_JS.exists():
+                self._reply(404, "text/plain",
+                            b"argon2-bundled.min.js not found. "
+                            b"See README for the one-time download command.")
+                return
+            self._reply(200, "application/javascript", ARGON2_JS.read_bytes())
+            return
+
+        if not self._check_auth():
+            return
+        if not self._rate_check("read", 120):
+            return
+
+        if p == "/files":
             files = sorted(FILES_DIR.glob("*.enc"), key=lambda f: -f.stat().st_mtime)
             self._reply(200, "application/json",
                         json.dumps({"files": [f.stem for f in files]}).encode())
@@ -92,11 +216,9 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(404, "text/plain", b"Not found")
             return
 
-        data = path.read_bytes()
-        total = len(data)
-
-        # Support Range requests so the frontend can fetch only metadata cheaply
+        total = path.stat().st_size
         range_hdr = self.headers.get("Range", "")
+
         if range_hdr.startswith("bytes="):
             try:
                 spec = range_hdr[6:].split(",")[0].strip().split("-")
@@ -108,29 +230,51 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_header("Content-Range", f"bytes */{total}")
                     self.end_headers()
                     return
-                chunk = data[start : end + 1]
+                chunk_len = end - start + 1
                 self.send_response(206)
                 self.send_header("Content-Type", "application/octet-stream")
-                self.send_header("Content-Length", str(len(chunk)))
+                self.send_header("Content-Length", str(chunk_len))
                 self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
                 self.send_header("Accept-Ranges", "bytes")
-                for k, v in NO_CACHE.items():
+                for k, v in BASE_HEADERS.items():
                     self.send_header(k, v)
                 self.end_headers()
-                self.wfile.write(chunk)
+                with open(path, "rb") as f:
+                    f.seek(start)
+                    remaining = chunk_len
+                    while remaining > 0:
+                        data = f.read(min(CHUNK, remaining))
+                        if not data:
+                            break
+                        self.wfile.write(data)
+                        remaining -= len(data)
                 return
             except (ValueError, IndexError):
                 pass
 
-        self._reply(200, "application/octet-stream", data, {
-            "Content-Disposition": f'attachment; filename="{file_id}.enc"',
-            "Accept-Ranges": "bytes",
-        })
+        # Full file — stream in chunks
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(total))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Disposition",
+                         f'attachment; filename="{file_id}.enc"')
+        for k, v in BASE_HEADERS.items():
+            self.send_header(k, v)
+        self.end_headers()
+        with open(path, "rb") as f:
+            while True:
+                data = f.read(CHUNK)
+                if not data:
+                    break
+                self.wfile.write(data)
 
     # ── POST ─────────────────────────────────────────────────────────────────
 
     def do_POST(self):
         p = self._clean_path()
+        if not self._check_auth():
+            return
         if p == "/upload":
             self._upload()
         elif p == "/fetch":
@@ -139,6 +283,8 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(404, "text/plain", b"Not found")
 
     def _upload(self):
+        if not self._rate_check("upload", 10):
+            return
         try:
             length = int(self.headers.get("Content-Length", 0))
         except ValueError:
@@ -150,15 +296,68 @@ class Handler(BaseHTTPRequestHandler):
         if length > MAX_UPLOAD:
             self._reply(413, "text/plain", b"Too large (max 2 GiB)")
             return
-        data = self.rfile.read(length)
-        if len(data) < 4 or data[:4] != b"ENCF":
-            self._reply(400, "text/plain", b"Invalid format (missing ENCF magic bytes)")
+
+        # Client-generated UUID enables AAD binding; fall back to server UUID
+        raw_id = self.headers.get("X-File-ID", "").strip()
+        try:
+            file_id = str(uuid.UUID(raw_id))
+        except ValueError:
+            file_id = str(uuid.uuid4())
+
+        dest = FILES_DIR / f"{file_id}.enc"
+        if dest.exists():
+            self._reply(409, "text/plain", b"File ID already exists")
             return
-        file_id = str(uuid.uuid4())
-        (FILES_DIR / f"{file_id}.enc").write_bytes(data)
-        self._reply(201, "application/json", json.dumps({"id": file_id}).encode())
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=FILES_DIR, suffix=".tmp", delete=False
+            ) as tmp:
+                tmp_path = tmp.name
+                first = True
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(CHUNK, remaining))
+                    if not chunk:
+                        break
+                    if first:
+                        if len(chunk) < 4 or chunk[:4] != b"ENCF":
+                            self.close_connection = True
+                            self._reply(400, "text/plain",
+                                        b"Invalid format (missing ENCF magic bytes)")
+                            return
+                        first = False
+                    tmp.write(chunk)
+                    remaining -= len(chunk)
+
+            if remaining > 0:
+                self.close_connection = True
+                self._reply(400, "text/plain", b"Incomplete upload")
+                return
+
+            os.rename(tmp_path, str(dest))
+            tmp_path = None  # rename succeeded — don't delete in finally
+
+            # Randomize mtime so forensic analysis can't read upload timestamps
+            mtime = time.time() - random.uniform(0, 90 * 86400)
+            os.utime(dest, (mtime, mtime))
+
+            self._reply(201, "application/json",
+                        json.dumps({"id": file_id}).encode())
+
+        except Exception as e:
+            self._reply(500, "text/plain", f"Upload failed: {e}".encode())
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     def _fetch_url(self):
+        if not self._rate_check("fetch", 10):
+            return
         try:
             length = int(self.headers.get("Content-Length", 0))
         except ValueError:
@@ -169,29 +368,31 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         url = self.rfile.read(length).decode("utf-8", errors="replace").strip()
-        ok, err = _safe_url(url)
+        ok, err = _validate_url(url)
         if not ok:
             self._reply(400, "text/plain", err)
             return
 
         try:
             req = urllib.request.Request(
-                url, headers={"User-Agent": "Mozilla/5.0 (compatible; Vault/1.0)"}
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; Vault/1.0)"},
             )
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with _SAFE_OPENER.open(req, timeout=60) as resp:
                 declared = int(resp.headers.get("Content-Length") or 0)
                 if declared > MAX_FETCH:
-                    self._reply(413, "text/plain", b"Remote file too large (max 500 MB)")
+                    self._reply(413, "text/plain",
+                                b"Remote file too large (max 500 MB)")
                     return
                 data = resp.read(MAX_FETCH + 1)
                 if len(data) > MAX_FETCH:
-                    self._reply(413, "text/plain", b"Remote file too large (max 500 MB)")
+                    self._reply(413, "text/plain",
+                                b"Remote file too large (max 500 MB)")
                     return
 
-                mime = (resp.headers.get("Content-Type") or "application/octet-stream"
-                        ).split(";")[0].strip()
+                mime = (resp.headers.get("Content-Type") or
+                        "application/octet-stream").split(";")[0].strip()
 
-                # Derive filename from Content-Disposition, then URL path
                 name = ""
                 cd = resp.headers.get("Content-Disposition") or ""
                 if "filename=" in cd:
@@ -200,14 +401,15 @@ class Handler(BaseHTTPRequestHandler):
                     name = urllib.parse.urlparse(url).path.rstrip("/").split("/")[-1]
                 if not name:
                     name = "download"
-                # Sanitize
-                name = "".join(c for c in name if c not in '/\\:*?"<>|').strip() or "download"
+                name = ("".join(c for c in name
+                                if c not in '/\\:*?"<>|').strip() or "download")
 
                 self._reply(200, mime, data,
                             {"X-Filename": urllib.parse.quote(name)})
 
         except urllib.error.HTTPError as e:
-            self._reply(502, "text/plain", f"Remote returned {e.code}: {e.reason}".encode())
+            self._reply(502, "text/plain",
+                        f"Remote returned {e.code}: {e.reason}".encode())
         except urllib.error.URLError as e:
             self._reply(502, "text/plain", f"Fetch failed: {e.reason}".encode())
         except TimeoutError:
@@ -219,6 +421,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         p = self._clean_path()
+        if not self._check_auth():
+            return
+        if not self._rate_check("delete", 30):
+            return
         if p.startswith("/file/"):
             self._delete_file(p[6:])
         else:
@@ -231,30 +437,58 @@ class Handler(BaseHTTPRequestHandler):
         if not path.exists():
             self._reply(404, "text/plain", b"Not found")
             return
+
+        # Overwrite with random bytes before unlink (secure delete, best-effort on SSD)
+        try:
+            size = path.stat().st_size
+            with open(path, "r+b") as f:
+                written = 0
+                while written < size:
+                    n = min(CHUNK, size - written)
+                    f.write(os.urandom(n))
+                    written += n
+                f.flush()
+                os.fsync(f.fileno())
+        except OSError:
+            pass
         path.unlink()
+
         self.send_response(204)
-        for k, v in NO_CACHE.items():
+        for k, v in BASE_HEADERS.items():
             self.send_header(k, v)
         self.end_headers()
 
     def log_message(self, fmt, *args):
-        pass  # all request logging suppressed
-
+        pass
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Encrypted file server")
-    ap.add_argument("--host", default="localhost", help="Bind address (default: localhost)")
-    ap.add_argument("--port", type=int, default=9000, help="Port (default: 9000)")
+    ap.add_argument("--host", default="localhost",
+                    help="Bind address (default: localhost)")
+    ap.add_argument("--port", type=int, default=9000,
+                    help="Port number (default: 9000)")
     args = ap.parse_args()
 
     FILES_DIR.mkdir(exist_ok=True)
-    server = HTTPServer((args.host, args.port), Handler)
 
     cert = BASE / "cert.pem"
     key  = BASE / "key.pem"
-    if cert.exists() and key.exists():
+    has_tls = cert.exists() and key.exists()
+    is_local = args.host in ("localhost", "127.0.0.1", "::1")
+
+    if not is_local and not has_tls:
+        sys.exit(
+            "ERROR: Non-localhost binding requires TLS.\n"
+            "Place cert.pem and key.pem in the vault directory.\n"
+            "See README for Tailscale certificate setup."
+        )
+
+    VAULT_TOKEN = _load_token()
+
+    server = HTTPServer((args.host, args.port), Handler)
+    if has_tls:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(cert, key)
         server.socket = ctx.wrap_socket(server.socket, server_side=True)
@@ -262,8 +496,8 @@ if __name__ == "__main__":
     else:
         scheme = "http"
 
-    print(f"Vault listening on {scheme}://{args.host}:{args.port}")
+    print(f"[vault] Listening on {scheme}://{args.host}:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nStopped.")
+        print("\n[vault] Stopped.")

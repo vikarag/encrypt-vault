@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="vault-token" content="__VAULT_TOKEN__">
 <title>Vault</title>
+<script src="/argon2.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -16,6 +18,7 @@
   --accent:  #4a9eff;
   --danger:  #e05555;
   --ok:      #50c878;
+  --warn:    #e0c055;
 }
 
 body {
@@ -27,13 +30,34 @@ body {
   padding: 28px 20px;
 }
 
+.vault-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 24px;
+  max-width: 660px;
+}
+
 h1 {
   font-size: 15px;
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--accent);
-  margin-bottom: 24px;
+  flex: 1;
+}
+
+#session-countdown {
+  font-size: 11px;
+  color: var(--muted);
+  display: none;
+  white-space: nowrap;
+}
+
+#lock-btn {
+  display: none;
+  font-size: 11px;
+  padding: 3px 9px;
 }
 
 .card {
@@ -91,6 +115,28 @@ button.ghost:hover:not(:disabled) { color: var(--text); border-color: #3a3a3a; }
 button.danger   { background: transparent; border-color: var(--danger); color: var(--danger); }
 button.danger:hover:not(:disabled) { background: rgba(224,85,85,0.08); }
 button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* Strength bar */
+#pw-strength-wrap {
+  display: none;
+  margin-top: 6px;
+}
+#pw-strength-track {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+#pw-strength-bar {
+  height: 100%;
+  width: 0;
+  transition: width 0.2s, background 0.2s;
+}
+#pw-strength-label {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 3px;
+}
 
 .progress {
   height: 2px;
@@ -241,13 +287,21 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 
 <div id="timeout-notice">Session cleared after inactivity — re-enter your password to continue.</div>
 
-<h1>⬡ Vault</h1>
+<div class="vault-header">
+  <h1>⬡ Vault</h1>
+  <span id="session-countdown"></span>
+  <button class="ghost" id="lock-btn" title="Lock the vault immediately">Lock Now</button>
+</div>
 
 <div class="card">
   <div class="card-title">Password</div>
   <div class="row">
     <input type="password" id="pw" placeholder="Master password" autocomplete="off" spellcheck="false" style="flex:1">
     <button class="ghost" id="vkb-btn" title="Virtual keyboard (shuffled on each open)">⌨</button>
+  </div>
+  <div id="pw-strength-wrap">
+    <div id="pw-strength-track"><div id="pw-strength-bar"></div></div>
+    <div id="pw-strength-label"></div>
   </div>
   <div id="vkb-panel"></div>
   <div id="vkb-counter"></div>
@@ -299,14 +353,52 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
+const SESSION_MS  = 60 * 1000;   // 1-minute inactivity lock
 const PBKDF2_ITER = 210_000;
 const ENC = new TextEncoder();
 const DEC = new TextDecoder();
+const VAULT_TOKEN = (document.querySelector('meta[name="vault-token"]') || {}).content || '';
+
+// ── Auth helper ───────────────────────────────────────────────────────────────
+
+function authHeaders(extra) {
+  return Object.assign({ 'Authorization': `Bearer ${VAULT_TOKEN}` }, extra || {});
+}
+
+// ── Password entropy ──────────────────────────────────────────────────────────
+
+function passwordEntropy(pw) {
+  if (!pw) return 0;
+  let charset = 0;
+  if (/[a-z]/.test(pw)) charset += 26;
+  if (/[A-Z]/.test(pw)) charset += 26;
+  if (/[0-9]/.test(pw)) charset += 10;
+  if (/[^a-zA-Z0-9]/.test(pw)) charset += 32;
+  return charset > 0 ? Math.log2(charset) * pw.length : 0;
+}
+
+function updateStrengthBar(pw) {
+  const wrap  = document.getElementById('pw-strength-wrap');
+  const bar   = document.getElementById('pw-strength-bar');
+  const label = document.getElementById('pw-strength-label');
+  if (!pw) {
+    wrap.style.display = 'none';
+    return;
+  }
+  wrap.style.display = '';
+  const bits = passwordEntropy(pw);
+  let pct, color, text;
+  if      (bits < 40) { pct = 12;  color = 'var(--danger)'; text = `Weak — ${bits.toFixed(0)} bits`; }
+  else if (bits < 60) { pct = 35;  color = '#e08855';       text = `Fair — ${bits.toFixed(0)} bits (min 60 required)`; }
+  else if (bits < 80) { pct = 65;  color = 'var(--warn)';   text = `Good — ${bits.toFixed(0)} bits`; }
+  else                { pct = 100; color = 'var(--ok)';      text = `Strong — ${bits.toFixed(0)} bits`; }
+  bar.style.width      = pct + '%';
+  bar.style.background = color;
+  label.style.color    = color;
+  label.textContent    = text;
+}
 
 // ── Size padding ──────────────────────────────────────────────────────────────
-//  Hides exact file sizes on disk. Files are padded to power-of-2 buckets up
-//  to 128 MB, then to the nearest 16 MB boundary above that.
-//  Metadata is always padded to META_PAD bytes to hide filename/type lengths.
 
 const META_PAD = 512;
 
@@ -326,7 +418,26 @@ const cache = Object.create(null);
 
 // ── Key derivation ────────────────────────────────────────────────────────────
 
-async function deriveKey(password, salt) {
+async function _deriveKeyArgon2(password, salt) {
+  if (typeof argon2 === 'undefined')
+    throw new Error('Argon2 library not loaded. See README for download command.');
+  const result = await argon2.hash({
+    pass: password,
+    salt: salt,
+    time: 3,
+    mem: 65536,   // 64 MiB — makes each GPU guess cost 64 MiB
+    hashLen: 32,
+    parallelism: 1,
+    type: argon2.ArgonType.Argon2id,
+  });
+  return crypto.subtle.importKey(
+    'raw', result.hash,
+    { name: 'AES-GCM', length: 256 },
+    false, ['encrypt', 'decrypt']
+  );
+}
+
+async function _deriveKeyPBKDF2(password, salt) {
   const raw = await crypto.subtle.importKey(
     'raw', ENC.encode(password), 'PBKDF2', false, ['deriveKey']
   );
@@ -334,21 +445,27 @@ async function deriveKey(password, salt) {
     { name: 'PBKDF2', salt, iterations: PBKDF2_ITER, hash: 'SHA-256' },
     raw,
     { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt']
+    false, ['encrypt', 'decrypt']
   );
+}
+
+// version 1 = PBKDF2-SHA256 (legacy); version 2+ = Argon2id
+async function deriveKey(password, salt, version) {
+  return version >= 2
+    ? _deriveKeyArgon2(password, salt)
+    : _deriveKeyPBKDF2(password, salt);
 }
 
 // ── Binary format helpers ─────────────────────────────────────────────────────
 //
 //  Offset  Len  Field
 //  0       4    Magic "ENCF"
-//  4       2    Version 0x0001 (big-endian)
+//  4       2    Version (0x0001 = PBKDF2, 0x0002 = Argon2id + AAD)
 //  6       2    Flags   0x0000
 //  8       4    MetaLen (big-endian)
 //  12      16   Salt
 //  28      12   Meta-IV
-//  40      ML   EncryptedMeta  (AES-GCM output includes 16-byte auth tag)
+//  40      ML   EncryptedMeta  (AES-GCM ciphertext + 16-byte tag)
 //  40+ML   12   Data-IV
 //  52+ML   N+16 EncryptedData
 
@@ -358,135 +475,214 @@ function parseHeader(buf) {
   if (u8[0] !== 0x45 || u8[1] !== 0x4E || u8[2] !== 0x43 || u8[3] !== 0x46)
     throw new Error('BAD_FORMAT');
   return {
-    ML:     dv.getUint32(8, false),
-    salt:   u8.slice(12, 28),
-    metaIV: u8.slice(28, 40),
+    version: dv.getUint16(4, false),
+    ML:      dv.getUint32(8, false),
+    salt:    u8.slice(12, 28),
+    metaIV:  u8.slice(28, 40),
   };
 }
 
 // ── Encrypt ───────────────────────────────────────────────────────────────────
+// Returns { encBuf: ArrayBuffer, fileId: string }
 
 async function encryptFile(password, fileBuf, name, mime) {
+  const fileId = crypto.randomUUID();         // client-generated for AAD binding
+  const aad    = ENC.encode(fileId);          // bound to ciphertext — swap detection
   const salt   = crypto.getRandomValues(new Uint8Array(16));
   const metaIV = crypto.getRandomValues(new Uint8Array(12));
   const dataIV = crypto.getRandomValues(new Uint8Array(12));
 
-  const key = await deriveKey(password, salt);
+  const key = await deriveKey(password, salt, 2);
 
   const metaPlain = ENC.encode(JSON.stringify({
     name, mime,
     size: fileBuf.byteLength,
     uploadedAt: Math.floor(Date.now() / 1000),
   }));
-
-  // Pad metadata to fixed size — hides filename and MIME type lengths
   const metaPadded = new Uint8Array(Math.max(META_PAD, metaPlain.length));
   metaPadded.set(metaPlain);
 
-  // Pad file data to power-of-2 bucket — hides exact file size on disk
   const ps = paddedSize(fileBuf.byteLength);
-  const dataPadded = new Uint8Array(ps); // zero-filled by default
+  const dataPadded = new Uint8Array(ps);
   dataPadded.set(new Uint8Array(fileBuf));
-  // Padding bytes are zeros — AES-GCM encryption makes them indistinguishable
-  // from random, so getRandomValues (capped at 64 KB) is unnecessary here.
 
   const [encMeta, encData] = await Promise.all([
-    crypto.subtle.encrypt({ name: 'AES-GCM', iv: metaIV }, key, metaPadded),
-    crypto.subtle.encrypt({ name: 'AES-GCM', iv: dataIV }, key, dataPadded),
+    crypto.subtle.encrypt({ name: 'AES-GCM', iv: metaIV, additionalData: aad }, key, metaPadded),
+    crypto.subtle.encrypt({ name: 'AES-GCM', iv: dataIV, additionalData: aad }, key, dataPadded),
   ]);
 
   const ML  = encMeta.byteLength;
   const out = new Uint8Array(52 + ML + encData.byteLength);
   const dv  = new DataView(out.buffer);
 
-  out[0] = 0x45; out[1] = 0x4E; out[2] = 0x43; out[3] = 0x46; // ENCF
-  dv.setUint16(4, 1, false);      // version
-  dv.setUint16(6, 0, false);      // flags
-  dv.setUint32(8, ML, false);     // MetaLen
-  out.set(salt,                12);
-  out.set(metaIV,              28);
+  out[0]=0x45; out[1]=0x4E; out[2]=0x43; out[3]=0x46; // ENCF
+  dv.setUint16(4, 2, false);    // version 2 — Argon2id + AAD
+  dv.setUint16(6, 0, false);
+  dv.setUint32(8, ML, false);
+  out.set(salt,                    12);
+  out.set(metaIV,                  28);
   out.set(new Uint8Array(encMeta), 40);
-  out.set(dataIV,          40 + ML);
-  out.set(new Uint8Array(encData), 52 + ML);
+  out.set(dataIV,              40+ML);
+  out.set(new Uint8Array(encData), 52+ML);
 
-  return out.buffer;
+  return { encBuf: out.buffer, fileId };
 }
 
 // ── Decrypt ───────────────────────────────────────────────────────────────────
+// fileId is passed as AAD for v2+ files; ignored for legacy v1 files.
 
-async function decryptFile(password, encBuf) {
+async function decryptFile(password, encBuf, fileId) {
   const u8  = new Uint8Array(encBuf);
-  const { ML, salt, metaIV } = parseHeader(encBuf);
+  const { version, ML, salt, metaIV } = parseHeader(encBuf);
 
   const encMeta = u8.slice(40, 40 + ML);
   const dataIV  = u8.slice(40 + ML, 52 + ML);
   const encData = u8.slice(52 + ML);
 
-  const key = await deriveKey(password, salt);
+  const key = await deriveKey(password, salt, version);
+  const aad = (version >= 2 && fileId) ? ENC.encode(fileId) : undefined;
+  const aadParam = aad ? { additionalData: aad } : {};
 
   let meta;
   try {
-    const mb = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: metaIV }, key, encMeta);
-    // Strip null-byte padding added during encryption
+    const mb = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: metaIV, ...aadParam }, key, encMeta
+    );
     meta = JSON.parse(DEC.decode(mb).replace(/\0+$/, ''));
   } catch { throw new Error('WRONG_PASSWORD'); }
 
   let plaintext;
   try {
-    plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: dataIV }, key, encData);
+    plaintext = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: dataIV, ...aadParam }, key, encData
+    );
   } catch { throw new Error('CORRUPTED'); }
 
-  // Strip file-size padding; original size is stored in metadata
   return { plaintext: plaintext.slice(0, meta.size), meta };
 }
 
 // ── Fetch metadata only (range request for first 1 KB) ───────────────────────
 
 async function fetchMeta(id, password) {
-  const res = await fetch(`/file/${id}`, { headers: { Range: 'bytes=0-1023' } });
+  const res = await fetch(`/file/${id}`, {
+    headers: authHeaders({ Range: 'bytes=0-1023' })
+  });
   if (!res.ok && res.status !== 206) throw new Error(`HTTP ${res.status}`);
 
   const buf = await res.arrayBuffer();
   const u8  = new Uint8Array(buf);
-  const { ML, salt, metaIV } = parseHeader(buf);
+  const { version, ML, salt, metaIV } = parseHeader(buf);
 
   if (40 + ML > buf.byteLength) throw new Error('META_TOO_LARGE');
 
   const encMeta = u8.slice(40, 40 + ML);
-  const key = await deriveKey(password, salt);
+  const key = await deriveKey(password, salt, version);
+  const aad = (version >= 2) ? ENC.encode(id) : undefined;
+  const aadParam = aad ? { additionalData: aad } : {};
 
   try {
-    const mb = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: metaIV }, key, encMeta);
-    return JSON.parse(DEC.decode(mb));
+    const mb = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: metaIV, ...aadParam }, key, encMeta
+    );
+    return JSON.parse(DEC.decode(mb).replace(/\0+$/, ''));
   } catch { throw new Error('WRONG_PASSWORD'); }
 }
 
 // ── Blob URL cleanup ──────────────────────────────────────────────────────────
 
 const liveUrls = [];
-
-function trackUrl(url)  { liveUrls.push(url); return url; }
-function revokeAll()    { while (liveUrls.length) URL.revokeObjectURL(liveUrls.pop()); }
+function trackUrl(url) { liveUrls.push(url); return url; }
+function revokeAll()   { while (liveUrls.length) URL.revokeObjectURL(liveUrls.pop()); }
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
 
-function pw() {
+function getPw() {
   const v = document.getElementById('pw').value.trim();
   if (!v) { alert('Enter a password first.'); return null; }
   return v;
 }
 
-function setStatus(msg, cls = '') {
+function checkStrength(password) {
+  const bits = passwordEntropy(password);
+  if (bits < 60) {
+    alert(
+      `Password is too weak (${bits.toFixed(0)} bits).\n\n` +
+      `Use a longer passphrase with mixed characters.\n` +
+      `Recommended: a 6-word diceware passphrase (≥77 bits).`
+    );
+    return false;
+  }
+  return true;
+}
+
+function setStatus(msg, cls) {
   const el = document.getElementById('up-status');
   el.textContent = msg;
-  el.className = `status ${cls}`;
+  el.className = `status ${cls || ''}`;
 }
+
+// ── Session management ────────────────────────────────────────────────────────
+
+let sessionTimer    = null;
+let countdownTimer  = null;
+let sessionDeadline = 0;
+
+function updateSessionUI() {
+  const hasPw = !!document.getElementById('pw').value;
+  const cd  = document.getElementById('session-countdown');
+  const btn = document.getElementById('lock-btn');
+  cd.style.display  = hasPw ? '' : 'none';
+  btn.style.display = hasPw ? '' : 'none';
+}
+
+function updateCountdown() {
+  const el = document.getElementById('session-countdown');
+  const remaining = Math.max(0, Math.ceil((sessionDeadline - Date.now()) / 1000));
+  el.textContent = `Auto-lock in ${remaining}s`;
+}
+
+function clearSession(showNotice) {
+  clearTimeout(sessionTimer);
+  clearInterval(countdownTimer);
+  sessionTimer = countdownTimer = null;
+
+  closeViewer();
+  document.getElementById('pw').value = '';
+  document.getElementById('vkb-counter').textContent = '';
+  updateStrengthBar('');
+  updateSessionUI();
+  for (const k of Object.keys(cache)) delete cache[k];
+  loadFiles();
+
+  if (showNotice !== false) {
+    const notice = document.getElementById('timeout-notice');
+    notice.style.display = '';
+    setTimeout(() => { notice.style.display = 'none'; }, 7000);
+  }
+}
+
+function resetSessionTimer() {
+  clearTimeout(sessionTimer);
+  clearInterval(countdownTimer);
+  sessionDeadline = Date.now() + SESSION_MS;
+  sessionTimer   = setTimeout(() => clearSession(true), SESSION_MS);
+  countdownTimer = setInterval(updateCountdown, 500);
+  updateCountdown();
+}
+
+document.getElementById('lock-btn').addEventListener('click', () => clearSession(false));
 
 // ── File list ─────────────────────────────────────────────────────────────────
 
 async function loadFiles() {
-  const res = await fetch('/files');
-  if (!res.ok) { console.error('Could not load file list'); return; }
+  const res = await fetch('/files', { headers: authHeaders() });
+  if (!res.ok) {
+    if (res.status === 401)
+      console.warn('[vault] 401 on /files — token may have changed, reload the page');
+    else
+      console.error('[vault] Could not load file list:', res.status);
+    return;
+  }
   const { files } = await res.json();
 
   const list  = document.getElementById('file-list');
@@ -522,8 +718,9 @@ async function loadFiles() {
 // ── Upload ────────────────────────────────────────────────────────────────────
 
 document.getElementById('upload-btn').addEventListener('click', async () => {
-  const password = pw();
+  const password = getPw();
   if (!password) return;
+  if (!checkStrength(password)) return;
 
   const picker = document.getElementById('picker');
   const files  = picker.files;
@@ -544,14 +741,16 @@ document.getElementById('upload-btn').addEventListener('click', async () => {
 
     try {
       const fileBuf = await f.arrayBuffer();
-      const encBuf  = await encryptFile(
+      const { encBuf, fileId } = await encryptFile(
         password, fileBuf, f.name, f.type || 'application/octet-stream'
       );
       setStatus(`Uploading ${f.name}…`);
       const res = await fetch('/upload', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream',
-                   },
+        headers: authHeaders({
+          'Content-Type': 'application/octet-stream',
+          'X-File-ID': fileId,
+        }),
         body: encBuf,
       });
       if (!res.ok) throw new Error(`Server ${res.status}`);
@@ -574,7 +773,7 @@ document.getElementById('upload-btn').addEventListener('click', async () => {
 // ── Reveal names ──────────────────────────────────────────────────────────────
 
 document.getElementById('reveal-btn').addEventListener('click', async () => {
-  const password = pw();
+  const password = getPw();
   if (!password) return;
 
   const items = document.querySelectorAll('#file-list li');
@@ -588,7 +787,12 @@ document.getElementById('reveal-btn').addEventListener('click', async () => {
   for (const li of items) {
     const nameEl = li.querySelector('.fname');
     const id = nameEl.title;
-    if (cache[id]) { ok++; nameEl.textContent = cache[id].name; nameEl.className = 'fname named'; continue; }
+    if (cache[id]) {
+      ok++;
+      nameEl.textContent = cache[id].name;
+      nameEl.className = 'fname named';
+      continue;
+    }
     try {
       const meta = await fetchMeta(id, password);
       cache[id] = meta;
@@ -601,7 +805,7 @@ document.getElementById('reveal-btn').addEventListener('click', async () => {
   btn.disabled = false;
   btn.textContent = 'Reveal Names';
   if (fail && !ok) alert('Wrong password — could not decrypt any names.');
-  else if (fail) console.warn(`${fail} file(s) could not be decrypted (wrong password?)`);
+  else if (fail) console.warn(`[vault] ${fail} file(s) could not be decrypted`);
 });
 
 // ── Refresh ───────────────────────────────────────────────────────────────────
@@ -611,7 +815,7 @@ document.getElementById('refresh-btn').addEventListener('click', loadFiles);
 // ── View ──────────────────────────────────────────────────────────────────────
 
 async function viewFile(id, nameEl) {
-  const password = pw();
+  const password = getPw();
   if (!password) return;
 
   const overlay = document.getElementById('viewer');
@@ -627,12 +831,12 @@ async function viewFile(id, nameEl) {
   overlay.classList.add('open');
 
   try {
-    const res = await fetch(`/file/${id}`);
+    const res = await fetch(`/file/${id}`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     vload.textContent = 'Decrypting…';
     const encBuf = await res.arrayBuffer();
-    const { plaintext, meta } = await decryptFile(password, encBuf);
+    const { plaintext, meta } = await decryptFile(password, encBuf, id);
 
     cache[id] = meta;
     vname.textContent = meta.name;
@@ -654,34 +858,23 @@ async function viewFile(id, nameEl) {
 
     if (mtype === 'image') {
       const img = document.createElement('img');
-      img.src = url;
-      img.alt = meta.name;
+      img.src = url; img.alt = meta.name;
       vcont.appendChild(img);
-
     } else if (mtype === 'audio') {
       const audio = document.createElement('audio');
-      audio.controls = true;
-      audio.src = url;
+      audio.controls = true; audio.src = url;
       vcont.appendChild(audio);
-
     } else if (mtype === 'video') {
       const video = document.createElement('video');
-      video.controls = true;
-      video.src = url;
+      video.controls = true; video.src = url;
       vcont.appendChild(video);
-
     } else if (mime === 'application/pdf') {
       const embed = document.createElement('embed');
-      embed.src  = url;
-      embed.type = 'application/pdf';
+      embed.src = url; embed.type = 'application/pdf';
       vcont.appendChild(embed);
-
     } else {
-      // Trigger download for unsupported types
       const a = document.createElement('a');
-      a.href     = url;
-      a.download = meta.name;
-      a.click();
+      a.href = url; a.download = meta.name; a.click();
       const p = document.createElement('p');
       p.className = 'dl-msg';
       p.textContent = `Downloading ${meta.name}…`;
@@ -707,7 +900,6 @@ function closeViewer() {
   document.getElementById('viewer').classList.remove('open');
   document.getElementById('vcontent').innerHTML = '';
   document.getElementById('vloading').style.display = 'none';
-  // Clear clipboard in case text content was copied while viewing
   navigator.clipboard?.writeText('').catch(() => {});
 }
 
@@ -724,13 +916,15 @@ async function deleteFile(id, li) {
   const name = cache[id] ? cache[id].name : id.slice(0, 8) + '…';
   if (!confirm(`Delete "${name}"?\n\nThis cannot be undone.`)) return;
 
-  const res = await fetch(`/file/${id}`, { method: 'DELETE' });
+  const res = await fetch(`/file/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
   if (res.ok || res.status === 404) {
     delete cache[id];
     li.remove();
-    const list  = document.getElementById('file-list');
     document.getElementById('empty-msg').style.display =
-      list.children.length ? 'none' : '';
+      document.getElementById('file-list').children.length ? 'none' : '';
   } else {
     alert(`Delete failed: ${res.status}`);
   }
@@ -739,8 +933,9 @@ async function deleteFile(id, li) {
 // ── URL fetch ─────────────────────────────────────────────────────────────────
 
 document.getElementById('url-btn').addEventListener('click', async () => {
-  const password = pw();
+  const password = getPw();
   if (!password) return;
+  if (!checkStrength(password)) return;
 
   const urlVal = document.getElementById('url-input').value.trim();
   if (!urlVal) { alert('Enter a URL.'); return; }
@@ -757,8 +952,10 @@ document.getElementById('url-btn').addEventListener('click', async () => {
   try {
     const res = await fetch('/fetch', {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain; charset=utf-8',
-                 'Content-Length': new TextEncoder().encode(urlVal).length },
+      headers: authHeaders({
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Length': ENC.encode(urlVal).length,
+      }),
       body: urlVal,
     });
 
@@ -773,13 +970,16 @@ document.getElementById('url-btn').addEventListener('click', async () => {
     const fileBuf = await res.arrayBuffer();
 
     bar.style.width = '65%';
-    const encBuf = await encryptFile(password, fileBuf, name, mime);
+    const { encBuf, fileId } = await encryptFile(password, fileBuf, name, mime);
     bar.style.width = '85%';
     setStatus('Uploading…');
 
     const up = await fetch('/upload', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream' },
+      headers: authHeaders({
+        'Content-Type': 'application/octet-stream',
+        'X-File-ID': fileId,
+      }),
       body: encBuf,
     });
     if (!up.ok) throw new Error(`Upload error ${up.status}`);
@@ -825,7 +1025,7 @@ function updateVkCounter() {
 }
 
 function buildVirtualKeyboard() {
-  const panel  = document.getElementById('vkb-panel');
+  const panel   = document.getElementById('vkb-panel');
   const pwField = document.getElementById('pw');
   panel.innerHTML = '';
 
@@ -835,9 +1035,11 @@ function buildVirtualKeyboard() {
     btn.textContent = ch;
     btn.tabIndex = -1;
     btn.addEventListener('mousedown', e => {
-      e.preventDefault(); // keep focus on password field
+      e.preventDefault();
       pwField.value += ch;
       updateVkCounter();
+      updateStrengthBar(pwField.value);
+      updateSessionUI();
     });
     panel.appendChild(btn);
   }
@@ -850,7 +1052,13 @@ function buildVirtualKeyboard() {
     btn.className = cls;
     btn.textContent = label;
     btn.tabIndex = -1;
-    btn.addEventListener('mousedown', e => { e.preventDefault(); action(); updateVkCounter(); });
+    btn.addEventListener('mousedown', e => {
+      e.preventDefault();
+      action();
+      updateVkCounter();
+      updateStrengthBar(pwField.value);
+      updateSessionUI();
+    });
     panel.appendChild(btn);
   }
 
@@ -859,31 +1067,16 @@ function buildVirtualKeyboard() {
 
 document.getElementById('vkb-btn').addEventListener('click', () => {
   const panel = document.getElementById('vkb-panel');
-  if (panel.classList.toggle('open')) buildVirtualKeyboard(); // reshuffle each open
+  if (panel.classList.toggle('open')) buildVirtualKeyboard();
 });
 
-document.getElementById('pw').addEventListener('input', updateVkCounter);
+document.getElementById('pw').addEventListener('input', () => {
+  updateVkCounter();
+  updateStrengthBar(document.getElementById('pw').value);
+  updateSessionUI();
+});
 
-// ── Session timeout ───────────────────────────────────────────────────────────
-
-const SESSION_MS = 10 * 60 * 1000; // 10 minutes of inactivity
-let sessionTimer = null;
-
-function clearSession() {
-  closeViewer();
-  document.getElementById('pw').value = '';
-  document.getElementById('vkb-counter').textContent = '';
-  for (const k of Object.keys(cache)) delete cache[k];
-  loadFiles(); // re-render list with UUIDs (names hidden again)
-  const notice = document.getElementById('timeout-notice');
-  notice.style.display = '';
-  setTimeout(() => { notice.style.display = 'none'; }, 7000);
-}
-
-function resetSessionTimer() {
-  clearTimeout(sessionTimer);
-  sessionTimer = setTimeout(clearSession, SESSION_MS);
-}
+// ── Activity → reset session timer ───────────────────────────────────────────
 
 ['mousemove', 'keydown', 'mousedown', 'touchstart'].forEach(ev =>
   document.addEventListener(ev, resetSessionTimer, { passive: true })
