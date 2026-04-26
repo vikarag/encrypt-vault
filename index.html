@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vault</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #0d0d0d;
+  --surface: #161616;
+  --border:  #252525;
+  --text:    #d8d8d8;
+  --muted:   #555;
+  --accent:  #4a9eff;
+  --danger:  #e05555;
+  --ok:      #50c878;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 28px 20px;
+}
+
+h1 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 24px;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px 18px;
+  margin-bottom: 14px;
+  max-width: 660px;
+}
+
+.card-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+
+input[type="password"],
+input[type="file"] {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 7px 10px;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+input[type="password"]:focus { border-color: var(--accent); }
+
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+button {
+  background: var(--border);
+  border: 1px solid #2e2e2e;
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 5px 12px;
+  white-space: nowrap;
+  transition: background 0.1s;
+}
+button:hover:not(:disabled) { background: #2c2c2c; }
+button.primary  { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+button.primary:hover:not(:disabled) { background: #6ab4ff; }
+button.ghost    { background: transparent; border-color: var(--border); color: var(--muted); }
+button.ghost:hover:not(:disabled) { color: var(--text); border-color: #3a3a3a; }
+button.danger   { background: transparent; border-color: var(--danger); color: var(--danger); }
+button.danger:hover:not(:disabled) { background: rgba(224,85,85,0.08); }
+button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.progress {
+  height: 2px;
+  background: var(--border);
+  border-radius: 1px;
+  margin-top: 10px;
+  overflow: hidden;
+  display: none;
+}
+.progress-bar { height: 100%; background: var(--accent); width: 0; transition: width 0.25s; }
+
+.status {
+  font-size: 11px;
+  margin-top: 8px;
+  min-height: 16px;
+  color: var(--muted);
+}
+.status.ok  { color: var(--ok); }
+.status.err { color: var(--danger); }
+
+/* File list */
+#file-list { list-style: none; }
+
+#file-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+#file-list li:last-child { border-bottom: none; }
+
+.fname {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+.fname.named { color: var(--text); }
+
+#empty-msg { color: var(--muted); padding: 6px 0; font-size: 12px; }
+
+/* Viewer overlay */
+#viewer {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.88);
+  z-index: 200;
+  overflow-y: auto;
+  padding: 24px 16px;
+}
+#viewer.open { display: flex; justify-content: center; align-items: flex-start; }
+
+#vbox {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 100%;
+  max-width: 920px;
+  padding: 18px 20px;
+}
+
+#vhead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+  gap: 12px;
+}
+
+#vname {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+#vloading { color: var(--muted); padding: 40px 0; text-align: center; font-size: 12px; }
+
+#vcontent img  { max-width: 100%; max-height: 82vh; display: block; margin: 0 auto; }
+#vcontent audio,
+#vcontent video { width: 100%; }
+#vcontent embed { width: 100%; height: 82vh; display: block; }
+#vcontent pre  {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 82vh;
+  overflow: auto;
+  background: var(--bg);
+  padding: 14px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text);
+}
+#vcontent .dl-msg { color: var(--muted); padding: 30px 0; font-size: 12px; }
+
+/* Virtual keyboard */
+#vkb-panel {
+  display: none;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+#vkb-panel.open { display: flex; }
+.vk-key {
+  font-size: 12px;
+  padding: 5px 7px;
+  min-width: 28px;
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+}
+.vk-key:hover { background: #2c2c2c; }
+.vk-bs    { color: var(--danger); min-width: 42px; }
+.vk-clear { color: var(--muted);  min-width: 42px; font-size: 11px; }
+#vkb-counter { font-size: 11px; color: var(--muted); margin-top: 6px; min-height: 16px; }
+
+/* Session timeout notice */
+#timeout-notice {
+  display: none;
+  background: rgba(74,158,255,0.1);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 11px;
+  padding: 8px 12px;
+  margin-bottom: 14px;
+  max-width: 660px;
+}
+</style>
+</head>
+<body>
+
+<div id="timeout-notice">Session cleared after inactivity — re-enter your password to continue.</div>
+
+<h1>⬡ Vault</h1>
+
+<div class="card">
+  <div class="card-title">Password</div>
+  <div class="row">
+    <input type="password" id="pw" placeholder="Master password" autocomplete="off" spellcheck="false" style="flex:1">
+    <button class="ghost" id="vkb-btn" title="Virtual keyboard (shuffled on each open)">⌨</button>
+  </div>
+  <div id="vkb-panel"></div>
+  <div id="vkb-counter"></div>
+</div>
+
+<div class="card">
+  <div class="card-title">Upload</div>
+  <input type="file" id="picker" multiple>
+  <div class="row" style="margin-top:10px">
+    <button class="primary" id="upload-btn">Encrypt &amp; Upload</button>
+  </div>
+
+  <div style="border-top:1px solid var(--border);margin:14px 0"></div>
+
+  <label for="url-input">Fetch from URL</label>
+  <div class="row" style="margin-top:4px">
+    <input type="url" id="url-input" placeholder="https://example.com/photo.jpg" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:7px 10px;font-family:inherit;font-size:13px;outline:none">
+    <button class="primary" id="url-btn">Fetch &amp; Encrypt</button>
+  </div>
+
+  <div class="progress" id="prog"><div class="progress-bar" id="bar"></div></div>
+  <div class="status" id="up-status"></div>
+</div>
+
+<div class="card">
+  <div class="row" style="margin-bottom:12px">
+    <span class="card-title" style="margin:0;flex:1">Files</span>
+    <button class="ghost" id="reveal-btn" title="Decrypt filenames for all listed files">Reveal Names</button>
+    <button class="ghost" id="refresh-btn" title="Reload file list">↺ Refresh</button>
+  </div>
+  <p id="empty-msg">No files uploaded yet.</p>
+  <ul id="file-list"></ul>
+</div>
+
+<!-- Viewer -->
+<div id="viewer">
+  <div id="vbox">
+    <div id="vhead">
+      <span id="vname">…</span>
+      <button id="vclose">Close</button>
+    </div>
+    <div id="vloading">Decrypting…</div>
+    <div id="vcontent"></div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const PBKDF2_ITER = 210_000;
+const ENC = new TextEncoder();
+const DEC = new TextDecoder();
+
+// ── Size padding ──────────────────────────────────────────────────────────────
+//  Hides exact file sizes on disk. Files are padded to power-of-2 buckets up
+//  to 128 MB, then to the nearest 16 MB boundary above that.
+//  Metadata is always padded to META_PAD bytes to hide filename/type lengths.
+
+const META_PAD = 512;
+
+function paddedSize(n) {
+  if (n === 0) return 4096;
+  const LARGE = 128 * 1024 * 1024;
+  const CHUNK =  16 * 1024 * 1024;
+  if (n >= LARGE) return Math.ceil(n / CHUNK) * CHUNK;
+  let p = 4096;
+  while (p < n) p *= 2;
+  return p;
+}
+
+// ── In-session name cache  (id → {name, mime}) ────────────────────────────────
+
+const cache = Object.create(null);
+
+// ── Key derivation ────────────────────────────────────────────────────────────
+
+async function deriveKey(password, salt) {
+  const raw = await crypto.subtle.importKey(
+    'raw', ENC.encode(password), 'PBKDF2', false, ['deriveKey']
+  );
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: PBKDF2_ITER, hash: 'SHA-256' },
+    raw,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+// ── Binary format helpers ─────────────────────────────────────────────────────
+//
+//  Offset  Len  Field
+//  0       4    Magic "ENCF"
+//  4       2    Version 0x0001 (big-endian)
+//  6       2    Flags   0x0000
+//  8       4    MetaLen (big-endian)
+//  12      16   Salt
+//  28      12   Meta-IV
+//  40      ML   EncryptedMeta  (AES-GCM output includes 16-byte auth tag)
+//  40+ML   12   Data-IV
+//  52+ML   N+16 EncryptedData
+
+function parseHeader(buf) {
+  const u8 = new Uint8Array(buf);
+  const dv = new DataView(buf instanceof ArrayBuffer ? buf : buf.buffer);
+  if (u8[0] !== 0x45 || u8[1] !== 0x4E || u8[2] !== 0x43 || u8[3] !== 0x46)
+    throw new Error('BAD_FORMAT');
+  return {
+    ML:     dv.getUint32(8, false),
+    salt:   u8.slice(12, 28),
+    metaIV: u8.slice(28, 40),
+  };
+}
+
+// ── Encrypt ───────────────────────────────────────────────────────────────────
+
+async function encryptFile(password, fileBuf, name, mime) {
+  const salt   = crypto.getRandomValues(new Uint8Array(16));
+  const metaIV = crypto.getRandomValues(new Uint8Array(12));
+  const dataIV = crypto.getRandomValues(new Uint8Array(12));
+
+  const key = await deriveKey(password, salt);
+
+  const metaPlain = ENC.encode(JSON.stringify({
+    name, mime,
+    size: fileBuf.byteLength,
+    uploadedAt: Math.floor(Date.now() / 1000),
+  }));
+
+  // Pad metadata to fixed size — hides filename and MIME type lengths
+  const metaPadded = new Uint8Array(Math.max(META_PAD, metaPlain.length));
+  metaPadded.set(metaPlain);
+
+  // Pad file data to power-of-2 bucket — hides exact file size on disk
+  const ps = paddedSize(fileBuf.byteLength);
+  const dataPadded = new Uint8Array(ps); // zero-filled by default
+  dataPadded.set(new Uint8Array(fileBuf));
+  // Padding bytes are zeros — AES-GCM encryption makes them indistinguishable
+  // from random, so getRandomValues (capped at 64 KB) is unnecessary here.
+
+  const [encMeta, encData] = await Promise.all([
+    crypto.subtle.encrypt({ name: 'AES-GCM', iv: metaIV }, key, metaPadded),
+    crypto.subtle.encrypt({ name: 'AES-GCM', iv: dataIV }, key, dataPadded),
+  ]);
+
+  const ML  = encMeta.byteLength;
+  const out = new Uint8Array(52 + ML + encData.byteLength);
+  const dv  = new DataView(out.buffer);
+
+  out[0] = 0x45; out[1] = 0x4E; out[2] = 0x43; out[3] = 0x46; // ENCF
+  dv.setUint16(4, 1, false);      // version
+  dv.setUint16(6, 0, false);      // flags
+  dv.setUint32(8, ML, false);     // MetaLen
+  out.set(salt,                12);
+  out.set(metaIV,              28);
+  out.set(new Uint8Array(encMeta), 40);
+  out.set(dataIV,          40 + ML);
+  out.set(new Uint8Array(encData), 52 + ML);
+
+  return out.buffer;
+}
+
+// ── Decrypt ───────────────────────────────────────────────────────────────────
+
+async function decryptFile(password, encBuf) {
+  const u8  = new Uint8Array(encBuf);
+  const { ML, salt, metaIV } = parseHeader(encBuf);
+
+  const encMeta = u8.slice(40, 40 + ML);
+  const dataIV  = u8.slice(40 + ML, 52 + ML);
+  const encData = u8.slice(52 + ML);
+
+  const key = await deriveKey(password, salt);
+
+  let meta;
+  try {
+    const mb = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: metaIV }, key, encMeta);
+    // Strip null-byte padding added during encryption
+    meta = JSON.parse(DEC.decode(mb).replace(/\0+$/, ''));
+  } catch { throw new Error('WRONG_PASSWORD'); }
+
+  let plaintext;
+  try {
+    plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: dataIV }, key, encData);
+  } catch { throw new Error('CORRUPTED'); }
+
+  // Strip file-size padding; original size is stored in metadata
+  return { plaintext: plaintext.slice(0, meta.size), meta };
+}
+
+// ── Fetch metadata only (range request for first 1 KB) ───────────────────────
+
+async function fetchMeta(id, password) {
+  const res = await fetch(`/file/${id}`, { headers: { Range: 'bytes=0-1023' } });
+  if (!res.ok && res.status !== 206) throw new Error(`HTTP ${res.status}`);
+
+  const buf = await res.arrayBuffer();
+  const u8  = new Uint8Array(buf);
+  const { ML, salt, metaIV } = parseHeader(buf);
+
+  if (40 + ML > buf.byteLength) throw new Error('META_TOO_LARGE');
+
+  const encMeta = u8.slice(40, 40 + ML);
+  const key = await deriveKey(password, salt);
+
+  try {
+    const mb = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: metaIV }, key, encMeta);
+    return JSON.parse(DEC.decode(mb));
+  } catch { throw new Error('WRONG_PASSWORD'); }
+}
+
+// ── Blob URL cleanup ──────────────────────────────────────────────────────────
+
+const liveUrls = [];
+
+function trackUrl(url)  { liveUrls.push(url); return url; }
+function revokeAll()    { while (liveUrls.length) URL.revokeObjectURL(liveUrls.pop()); }
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+
+function pw() {
+  const v = document.getElementById('pw').value.trim();
+  if (!v) { alert('Enter a password first.'); return null; }
+  return v;
+}
+
+function setStatus(msg, cls = '') {
+  const el = document.getElementById('up-status');
+  el.textContent = msg;
+  el.className = `status ${cls}`;
+}
+
+// ── File list ─────────────────────────────────────────────────────────────────
+
+async function loadFiles() {
+  const res = await fetch('/files');
+  if (!res.ok) { console.error('Could not load file list'); return; }
+  const { files } = await res.json();
+
+  const list  = document.getElementById('file-list');
+  const empty = document.getElementById('empty-msg');
+  list.innerHTML = '';
+  empty.style.display = files.length ? 'none' : '';
+
+  for (const id of files) {
+    const known = cache[id];
+    const li = document.createElement('li');
+
+    const nameEl = document.createElement('span');
+    nameEl.className = known ? 'fname named' : 'fname';
+    nameEl.textContent = known ? known.name : `${id.slice(0, 8)}…`;
+    nameEl.title = id;
+
+    const viewBtn = document.createElement('button');
+    viewBtn.className = 'ghost';
+    viewBtn.textContent = 'View';
+    viewBtn.onclick = () => viewFile(id, nameEl);
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'danger';
+    delBtn.textContent = '×';
+    delBtn.title = 'Delete';
+    delBtn.onclick = () => deleteFile(id, li);
+
+    li.append(nameEl, viewBtn, delBtn);
+    list.appendChild(li);
+  }
+}
+
+// ── Upload ────────────────────────────────────────────────────────────────────
+
+document.getElementById('upload-btn').addEventListener('click', async () => {
+  const password = pw();
+  if (!password) return;
+
+  const picker = document.getElementById('picker');
+  const files  = picker.files;
+  if (!files.length) { alert('Choose at least one file.'); return; }
+
+  const btn  = document.getElementById('upload-btn');
+  const prog = document.getElementById('prog');
+  const bar  = document.getElementById('bar');
+
+  btn.disabled = true;
+  prog.style.display = '';
+  let failed = 0;
+
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    bar.style.width = `${Math.round(i / files.length * 100)}%`;
+    setStatus(`Encrypting ${f.name} (${i + 1}/${files.length})…`);
+
+    try {
+      const fileBuf = await f.arrayBuffer();
+      const encBuf  = await encryptFile(
+        password, fileBuf, f.name, f.type || 'application/octet-stream'
+      );
+      setStatus(`Uploading ${f.name}…`);
+      const res = await fetch('/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream',
+                   },
+        body: encBuf,
+      });
+      if (!res.ok) throw new Error(`Server ${res.status}`);
+      const { id } = await res.json();
+      cache[id] = { name: f.name, mime: f.type || 'application/octet-stream' };
+    } catch (e) {
+      setStatus(`Failed: ${e.message}`, 'err');
+      failed++;
+    }
+  }
+
+  bar.style.width = '100%';
+  if (!failed) setStatus(`${files.length} file(s) uploaded.`, 'ok');
+  picker.value = '';
+  btn.disabled = false;
+  setTimeout(() => { prog.style.display = 'none'; bar.style.width = '0'; }, 1200);
+  await loadFiles();
+});
+
+// ── Reveal names ──────────────────────────────────────────────────────────────
+
+document.getElementById('reveal-btn').addEventListener('click', async () => {
+  const password = pw();
+  if (!password) return;
+
+  const items = document.querySelectorAll('#file-list li');
+  if (!items.length) return;
+
+  const btn = document.getElementById('reveal-btn');
+  btn.disabled = true;
+  btn.textContent = 'Revealing…';
+
+  let ok = 0, fail = 0;
+  for (const li of items) {
+    const nameEl = li.querySelector('.fname');
+    const id = nameEl.title;
+    if (cache[id]) { ok++; nameEl.textContent = cache[id].name; nameEl.className = 'fname named'; continue; }
+    try {
+      const meta = await fetchMeta(id, password);
+      cache[id] = meta;
+      nameEl.textContent = meta.name;
+      nameEl.className = 'fname named';
+      ok++;
+    } catch { fail++; }
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Reveal Names';
+  if (fail && !ok) alert('Wrong password — could not decrypt any names.');
+  else if (fail) console.warn(`${fail} file(s) could not be decrypted (wrong password?)`);
+});
+
+// ── Refresh ───────────────────────────────────────────────────────────────────
+
+document.getElementById('refresh-btn').addEventListener('click', loadFiles);
+
+// ── View ──────────────────────────────────────────────────────────────────────
+
+async function viewFile(id, nameEl) {
+  const password = pw();
+  if (!password) return;
+
+  const overlay = document.getElementById('viewer');
+  const vname   = document.getElementById('vname');
+  const vload   = document.getElementById('vloading');
+  const vcont   = document.getElementById('vcontent');
+
+  revokeAll();
+  vcont.innerHTML = '';
+  vload.style.display = '';
+  vload.textContent = 'Downloading…';
+  vname.textContent = cache[id] ? cache[id].name : `${id.slice(0, 8)}…`;
+  overlay.classList.add('open');
+
+  try {
+    const res = await fetch(`/file/${id}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    vload.textContent = 'Decrypting…';
+    const encBuf = await res.arrayBuffer();
+    const { plaintext, meta } = await decryptFile(password, encBuf);
+
+    cache[id] = meta;
+    vname.textContent = meta.name;
+    if (nameEl) { nameEl.textContent = meta.name; nameEl.className = 'fname named'; }
+    vload.style.display = 'none';
+
+    const mime  = meta.mime || 'application/octet-stream';
+    const mtype = mime.split('/')[0];
+
+    if (mtype === 'text') {
+      const pre = document.createElement('pre');
+      pre.textContent = DEC.decode(plaintext);
+      vcont.appendChild(pre);
+      return;
+    }
+
+    const blob = new Blob([plaintext], { type: mime });
+    const url  = trackUrl(URL.createObjectURL(blob));
+
+    if (mtype === 'image') {
+      const img = document.createElement('img');
+      img.src = url;
+      img.alt = meta.name;
+      vcont.appendChild(img);
+
+    } else if (mtype === 'audio') {
+      const audio = document.createElement('audio');
+      audio.controls = true;
+      audio.src = url;
+      vcont.appendChild(audio);
+
+    } else if (mtype === 'video') {
+      const video = document.createElement('video');
+      video.controls = true;
+      video.src = url;
+      vcont.appendChild(video);
+
+    } else if (mime === 'application/pdf') {
+      const embed = document.createElement('embed');
+      embed.src  = url;
+      embed.type = 'application/pdf';
+      vcont.appendChild(embed);
+
+    } else {
+      // Trigger download for unsupported types
+      const a = document.createElement('a');
+      a.href     = url;
+      a.download = meta.name;
+      a.click();
+      const p = document.createElement('p');
+      p.className = 'dl-msg';
+      p.textContent = `Downloading ${meta.name}…`;
+      vcont.appendChild(p);
+      setTimeout(revokeAll, 8000);
+    }
+
+  } catch (e) {
+    vload.style.display = 'none';
+    const p = document.createElement('p');
+    p.style.cssText = 'color:var(--danger);padding:30px 0;font-size:12px';
+    p.textContent = e.message === 'WRONG_PASSWORD'
+      ? 'Decryption failed — wrong password or corrupted file.'
+      : `Error: ${e.message}`;
+    vcont.appendChild(p);
+  }
+}
+
+// ── Close viewer ──────────────────────────────────────────────────────────────
+
+function closeViewer() {
+  revokeAll();
+  document.getElementById('viewer').classList.remove('open');
+  document.getElementById('vcontent').innerHTML = '';
+  document.getElementById('vloading').style.display = 'none';
+  // Clear clipboard in case text content was copied while viewing
+  navigator.clipboard?.writeText('').catch(() => {});
+}
+
+document.getElementById('vclose').addEventListener('click', closeViewer);
+document.getElementById('viewer').addEventListener('click', e => {
+  if (e.target === document.getElementById('viewer')) closeViewer();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeViewer(); });
+window.addEventListener('beforeunload', revokeAll);
+
+// ── Delete ────────────────────────────────────────────────────────────────────
+
+async function deleteFile(id, li) {
+  const name = cache[id] ? cache[id].name : id.slice(0, 8) + '…';
+  if (!confirm(`Delete "${name}"?\n\nThis cannot be undone.`)) return;
+
+  const res = await fetch(`/file/${id}`, { method: 'DELETE' });
+  if (res.ok || res.status === 404) {
+    delete cache[id];
+    li.remove();
+    const list  = document.getElementById('file-list');
+    document.getElementById('empty-msg').style.display =
+      list.children.length ? 'none' : '';
+  } else {
+    alert(`Delete failed: ${res.status}`);
+  }
+}
+
+// ── URL fetch ─────────────────────────────────────────────────────────────────
+
+document.getElementById('url-btn').addEventListener('click', async () => {
+  const password = pw();
+  if (!password) return;
+
+  const urlVal = document.getElementById('url-input').value.trim();
+  if (!urlVal) { alert('Enter a URL.'); return; }
+
+  const btn  = document.getElementById('url-btn');
+  const prog = document.getElementById('prog');
+  const bar  = document.getElementById('bar');
+
+  btn.disabled = true;
+  prog.style.display = '';
+  bar.style.width = '10%';
+  setStatus('Fetching from URL…');
+
+  try {
+    const res = await fetch('/fetch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain; charset=utf-8',
+                 'Content-Length': new TextEncoder().encode(urlVal).length },
+      body: urlVal,
+    });
+
+    if (!res.ok) throw new Error((await res.text()) || `Server error ${res.status}`);
+
+    bar.style.width = '45%';
+    setStatus('Encrypting…');
+
+    const mime    = (res.headers.get('Content-Type') || 'application/octet-stream').split(';')[0].trim();
+    const rawName = res.headers.get('X-Filename') || 'download';
+    const name    = decodeURIComponent(rawName);
+    const fileBuf = await res.arrayBuffer();
+
+    bar.style.width = '65%';
+    const encBuf = await encryptFile(password, fileBuf, name, mime);
+    bar.style.width = '85%';
+    setStatus('Uploading…');
+
+    const up = await fetch('/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: encBuf,
+    });
+    if (!up.ok) throw new Error(`Upload error ${up.status}`);
+
+    const { id } = await up.json();
+    cache[id] = { name, mime };
+    bar.style.width = '100%';
+    setStatus(`"${name}" encrypted and saved.`, 'ok');
+    document.getElementById('url-input').value = '';
+    await loadFiles();
+    setTimeout(() => { prog.style.display = 'none'; bar.style.width = '0'; }, 1200);
+
+  } catch (e) {
+    setStatus(`Failed: ${e.message}`, 'err');
+    prog.style.display = 'none';
+  }
+
+  btn.disabled = false;
+});
+
+// ── Virtual keyboard ──────────────────────────────────────────────────────────
+
+const VK_CHARS = [
+  ...'abcdefghijklmnopqrstuvwxyz',
+  ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+  ...'0123456789',
+  ...'!@#$%^&*()-_=+[]{}:;<>,.?/|\\`~',
+];
+
+function shuffled(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = crypto.getRandomValues(new Uint32Array(1))[0] % (i + 1);
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function updateVkCounter() {
+  const n = document.getElementById('pw').value.length;
+  document.getElementById('vkb-counter').textContent =
+    n ? `${n} character${n !== 1 ? 's' : ''} entered` : '';
+}
+
+function buildVirtualKeyboard() {
+  const panel  = document.getElementById('vkb-panel');
+  const pwField = document.getElementById('pw');
+  panel.innerHTML = '';
+
+  for (const ch of shuffled(VK_CHARS)) {
+    const btn = document.createElement('button');
+    btn.className = 'vk-key';
+    btn.textContent = ch;
+    btn.tabIndex = -1;
+    btn.addEventListener('mousedown', e => {
+      e.preventDefault(); // keep focus on password field
+      pwField.value += ch;
+      updateVkCounter();
+    });
+    panel.appendChild(btn);
+  }
+
+  for (const [label, cls, action] of [
+    ['⌫', 'vk-key vk-bs',    () => { pwField.value = pwField.value.slice(0, -1); }],
+    ['Clear', 'vk-key vk-clear', () => { pwField.value = ''; }],
+  ]) {
+    const btn = document.createElement('button');
+    btn.className = cls;
+    btn.textContent = label;
+    btn.tabIndex = -1;
+    btn.addEventListener('mousedown', e => { e.preventDefault(); action(); updateVkCounter(); });
+    panel.appendChild(btn);
+  }
+
+  updateVkCounter();
+}
+
+document.getElementById('vkb-btn').addEventListener('click', () => {
+  const panel = document.getElementById('vkb-panel');
+  if (panel.classList.toggle('open')) buildVirtualKeyboard(); // reshuffle each open
+});
+
+document.getElementById('pw').addEventListener('input', updateVkCounter);
+
+// ── Session timeout ───────────────────────────────────────────────────────────
+
+const SESSION_MS = 10 * 60 * 1000; // 10 minutes of inactivity
+let sessionTimer = null;
+
+function clearSession() {
+  closeViewer();
+  document.getElementById('pw').value = '';
+  document.getElementById('vkb-counter').textContent = '';
+  for (const k of Object.keys(cache)) delete cache[k];
+  loadFiles(); // re-render list with UUIDs (names hidden again)
+  const notice = document.getElementById('timeout-notice');
+  notice.style.display = '';
+  setTimeout(() => { notice.style.display = 'none'; }, 7000);
+}
+
+function resetSessionTimer() {
+  clearTimeout(sessionTimer);
+  sessionTimer = setTimeout(clearSession, SESSION_MS);
+}
+
+['mousemove', 'keydown', 'mousedown', 'touchstart'].forEach(ev =>
+  document.addEventListener(ev, resetSessionTimer, { passive: true })
+);
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+resetSessionTimer();
+loadFiles();
+</script>
+</body>
+</html>
