@@ -26,14 +26,16 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 BASE      = Path(__file__).parent
-FILES_DIR = BASE / "files"
+FILES_DIR  = BASE / "files"
+TRASH_DIR  = FILES_DIR / "trash"
+TRASH_DAYS = 7   # days before auto-purge
 INDEX_HTML = BASE / "index.html"
 TOKEN_FILE = BASE / ".api-token"
 ARGON2_JS  = BASE / "argon2-bundled.min.js"
 
 MAX_UPLOAD = 2 * 1024 * 1024 * 1024  # 2 GiB
-MAX_FETCH  = 500 * 1024 * 1024        # 500 MiB
-CHUNK      = 65536                     # 64 KiB I/O block
+MAX_FETCH  = 1 * 1024 * 1024 * 1024  # 1 GiB
+CHUNK      = 65536                   # 64 KiB I/O block
 
 VAULT_TOKEN: str = ""  # set at startup by _load_token()
 
@@ -41,11 +43,12 @@ VAULT_TOKEN: str = ""  # set at startup by _load_token()
 
 _CSP = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline'; "
+    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' blob: data:; "
     "media-src blob:; "
-    "object-src blob:"
+    "object-src blob:; "
+    "worker-src blob:"   # argon2-browser spawns its WASM worker via blob: URL
 )
 BASE_HEADERS = {
     "Cache-Control": "no-store",
@@ -88,6 +91,43 @@ class _RateLimiter:
             return True
 
 _limiter = _RateLimiter()
+
+# ── Trash helpers ─────────────────────────────────────────────────────────────
+
+def _secure_delete(path):
+    """Overwrite with random bytes, fsync, unlink (best-effort on SSD)."""
+    if not path.exists():
+        return
+    try:
+        size = path.stat().st_size
+        with open(path, "r+b") as f:
+            written = 0
+            while written < size:
+                n = min(CHUNK, size - written)
+                f.write(os.urandom(n))
+                written += n
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError:
+        pass
+    path.unlink(missing_ok=True)
+
+def _purge_old_trash():
+    cutoff = time.time() - TRASH_DAYS * 86400
+    for meta_path in list(TRASH_DIR.glob("*.meta")):
+        try:
+            info = json.loads(meta_path.read_text())
+            if info.get("trashed_at", 0) < cutoff:
+                _secure_delete(TRASH_DIR / (meta_path.stem + ".enc"))
+                meta_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+def _schedule_daily_purge():
+    _purge_old_trash()
+    t = threading.Timer(86400, _schedule_daily_purge)
+    t.daemon = True
+    t.start()
 
 # ── SSRF protection ───────────────────────────────────────────────────────────
 
@@ -203,15 +243,32 @@ class Handler(BaseHTTPRequestHandler):
             files = sorted(FILES_DIR.glob("*.enc"), key=lambda f: -f.stat().st_mtime)
             self._reply(200, "application/json",
                         json.dumps({"files": [f.stem for f in files]}).encode())
+        elif p == "/trash":
+            self._list_trash()
         elif p.startswith("/file/"):
             self._serve_file(p[6:])
         else:
             self._reply(404, "text/plain", b"Not found")
 
+    def _list_trash(self):
+        items = []
+        for meta_path in sorted(TRASH_DIR.glob("*.meta"),
+                                key=lambda f: -f.stat().st_mtime):
+            try:
+                info = json.loads(meta_path.read_text())
+                items.append({"id": info.get("uuid", meta_path.stem),
+                              "trashed_at": info.get("trashed_at", 0)})
+            except Exception:
+                pass
+        self._reply(200, "application/json",
+                    json.dumps({"files": items}).encode())
+
     def _serve_file(self, file_id: str):
         if not self._validate_id(file_id):
             return
         path = FILES_DIR / f"{file_id}.enc"
+        if not path.exists():
+            path = TRASH_DIR / f"{file_id}.enc"
         if not path.exists():
             self._reply(404, "text/plain", b"Not found")
             return
@@ -279,6 +336,8 @@ class Handler(BaseHTTPRequestHandler):
             self._upload()
         elif p == "/fetch":
             self._fetch_url()
+        elif p.startswith("/trash/") and p.endswith("/restore"):
+            self._restore_file(p[7:-8])
         else:
             self._reply(404, "text/plain", b"Not found")
 
@@ -417,6 +476,30 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._reply(502, "text/plain", f"Error: {e}".encode())
 
+    def _restore_file(self, file_id: str):
+        if not self._validate_id(file_id):
+            return
+        if not self._rate_check("restore", 30):
+            return
+        src = TRASH_DIR / f"{file_id}.enc"
+        if not src.exists():
+            self._reply(404, "text/plain", b"Not found in trash")
+            return
+        dest = FILES_DIR / f"{file_id}.enc"
+        if dest.exists():
+            self._reply(409, "text/plain", b"UUID already exists in vault")
+            return
+        try:
+            os.rename(str(src), str(dest))
+            (TRASH_DIR / f"{file_id}.meta").unlink(missing_ok=True)
+        except OSError as e:
+            self._reply(500, "text/plain", f"Restore failed: {e}".encode())
+            return
+        self.send_response(204)
+        for k, v in BASE_HEADERS.items():
+            self.send_header(k, v)
+        self.end_headers()
+
     # ── DELETE ───────────────────────────────────────────────────────────────
 
     def do_DELETE(self):
@@ -427,32 +510,46 @@ class Handler(BaseHTTPRequestHandler):
             return
         if p.startswith("/file/"):
             self._delete_file(p[6:])
+        elif p.startswith("/trash/"):
+            self._permanent_delete(p[7:])
         else:
             self._reply(404, "text/plain", b"Not found")
 
     def _delete_file(self, file_id: str):
         if not self._validate_id(file_id):
             return
-        path = FILES_DIR / f"{file_id}.enc"
-        if not path.exists():
+        src = FILES_DIR / f"{file_id}.enc"
+        if not src.exists():
             self._reply(404, "text/plain", b"Not found")
             return
-
-        # Overwrite with random bytes before unlink (secure delete, best-effort on SSD)
+        dest      = TRASH_DIR / f"{file_id}.enc"
+        meta_path = TRASH_DIR / f"{file_id}.meta"
+        if dest.exists():
+            self._reply(409, "text/plain", b"Already in trash")
+            return
         try:
-            size = path.stat().st_size
-            with open(path, "r+b") as f:
-                written = 0
-                while written < size:
-                    n = min(CHUNK, size - written)
-                    f.write(os.urandom(n))
-                    written += n
-                f.flush()
-                os.fsync(f.fileno())
-        except OSError:
-            pass
-        path.unlink()
+            os.rename(str(src), str(dest))
+            meta_path.write_text(json.dumps({"trashed_at": int(time.time()), "uuid": file_id}))
+        except OSError as e:
+            self._reply(500, "text/plain", f"Trash failed: {e}".encode())
+            return
+        self.send_response(204)
+        for k, v in BASE_HEADERS.items():
+            self.send_header(k, v)
+        self.end_headers()
 
+    def _permanent_delete(self, file_id: str):
+        if not self._validate_id(file_id):
+            return
+        if not self._rate_check("trash_del", 30):
+            return
+        enc  = TRASH_DIR / f"{file_id}.enc"
+        meta = TRASH_DIR / f"{file_id}.meta"
+        if not enc.exists() and not meta.exists():
+            self._reply(404, "text/plain", b"Not found in trash")
+            return
+        _secure_delete(enc)
+        meta.unlink(missing_ok=True)
         self.send_response(204)
         for k, v in BASE_HEADERS.items():
             self.send_header(k, v)
@@ -472,6 +569,7 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     FILES_DIR.mkdir(exist_ok=True)
+    TRASH_DIR.mkdir(exist_ok=True)
 
     cert = BASE / "cert.pem"
     key  = BASE / "key.pem"
@@ -486,6 +584,7 @@ if __name__ == "__main__":
         )
 
     VAULT_TOKEN = _load_token()
+    _schedule_daily_purge()
 
     server = HTTPServer((args.host, args.port), Handler)
     if has_tls:

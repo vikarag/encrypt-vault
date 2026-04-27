@@ -152,10 +152,11 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   font-size: 11px;
   margin-top: 8px;
   min-height: 16px;
-  color: var(--muted);
+  color: var(--text);
 }
 .status.ok  { color: var(--ok); }
 .status.err { color: var(--danger); }
+.status.warn { color: var(--warn); }
 
 /* File list */
 #file-list { list-style: none; }
@@ -281,11 +282,67 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   margin-bottom: 14px;
   max-width: 660px;
 }
+
+/* ── Vault lock overlay ──────────────────────────────── */
+#vault-lock-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  background: rgba(13,13,13,0.85);
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+  justify-content: center;
+  align-items: center;
+}
+#vault-lock-overlay.locked { display: flex; }
+#lock-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 36px 32px 28px;
+  width: 100%;
+  max-width: 340px;
+  text-align: center;
+}
+#lock-icon { font-size: 40px; margin-bottom: 14px; }
+#lock-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 20px;
+}
+#lock-pw {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 8px 12px;
+  font-family: inherit;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+#lock-pw:focus { outline: none; border-color: var(--accent); }
+#lock-unlock-btn { width: 100%; margin-bottom: 8px; }
+#lock-err { font-size: 11px; color: var(--danger); min-height: 16px; }
 </style>
 </head>
 <body>
 
 <div id="timeout-notice">Session cleared after inactivity — re-enter your password to continue.</div>
+
+<div id="vault-lock-overlay">
+  <div id="lock-box">
+    <div id="lock-icon">&#128274;</div>
+    <div id="lock-title">Vault Locked</div>
+    <input type="password" id="lock-pw" placeholder="Master password"
+           autocomplete="current-password" spellcheck="false">
+    <button class="primary" id="lock-unlock-btn">Unlock</button>
+    <div id="lock-err"></div>
+  </div>
+</div>
 
 <div class="vault-header">
   <h1>⬡ Vault</h1>
@@ -336,6 +393,15 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   <ul id="file-list"></ul>
 </div>
 
+<div class="card" id="trash-card" style="display:none">
+  <div class="row" style="margin-bottom:12px">
+    <span class="card-title" style="margin:0;flex:1">Trash</span>
+    <button class="ghost" id="trash-refresh-btn" title="Reload trash">&#8635; Refresh</button>
+  </div>
+  <p id="trash-empty-msg" style="color:var(--muted);padding:6px 0;font-size:12px">Trash is empty.</p>
+  <ul id="trash-list" style="list-style:none"></ul>
+</div>
+
 <!-- Viewer -->
 <div id="viewer">
   <div id="vbox">
@@ -354,6 +420,7 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const SESSION_MS  = 60 * 1000;   // 1-minute inactivity lock
+const TRASH_DAYS = 7;
 const PBKDF2_ITER = 210_000;
 const ENC = new TextEncoder();
 const DEC = new TextDecoder();
@@ -400,7 +467,8 @@ function updateStrengthBar(pw) {
 
 // ── Size padding ──────────────────────────────────────────────────────────────
 
-const META_PAD = 512;
+const META_PAD      = 512;
+const ENC_CHUNK_SIZE = 64 * 1024 * 1024;  // 64 MiB — v3 chunk boundary
 
 function paddedSize(n) {
   if (n === 0) return 4096;
@@ -425,7 +493,7 @@ async function _deriveKeyArgon2(password, salt) {
     pass: password,
     salt: salt,
     time: 3,
-    mem: 65536,   // 64 MiB — makes each GPU guess cost 64 MiB
+    mem: 32768,   // 32 MiB — ~3–6s in browser; ~50,000× harder than PBKDF2 per guess
     hashLen: 32,
     parallelism: 1,
     type: argon2.ArgonType.Argon2id,
@@ -561,6 +629,105 @@ async function decryptFile(password, encBuf, fileId) {
   return { plaintext: plaintext.slice(0, meta.size), meta };
 }
 
+// ── v3: chunked encrypt (file.slice — one 64 MiB slice at a time) ────────────
+// Takes a File object, not an ArrayBuffer. Calls onProgress(done, total) each chunk.
+// Returns { body: Blob, fileId } — body is the complete .enc blob.
+
+async function encryptFileChunked(password, file, name, mime, onProgress) {
+  const fileId = crypto.randomUUID();
+  const aad    = ENC.encode(fileId);
+  const salt   = crypto.getRandomValues(new Uint8Array(16));
+  const metaIV = crypto.getRandomValues(new Uint8Array(12));
+
+  const key = await deriveKey(password, salt, 3);
+
+  const metaPlain = ENC.encode(JSON.stringify({
+    name, mime, size: file.size, uploadedAt: Math.floor(Date.now() / 1000),
+  }));
+  const metaPadded = new Uint8Array(Math.max(META_PAD, metaPlain.length));
+  metaPadded.set(metaPlain);
+  const encMeta = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: metaIV, additionalData: aad }, key, metaPadded
+  );
+  const ML = encMeta.byteLength;
+
+  const header = new Uint8Array(40 + ML);
+  const hdv = new DataView(header.buffer);
+  header[0]=0x45; header[1]=0x4E; header[2]=0x43; header[3]=0x46; // ENCF
+  hdv.setUint16(4, 3, false);  // version 3 — Argon2id + chunked
+  hdv.setUint16(6, 0, false);
+  hdv.setUint32(8, ML, false);
+  header.set(salt, 12);
+  header.set(metaIV, 28);
+  header.set(new Uint8Array(encMeta), 40);
+
+  const numChunks = Math.ceil(file.size / ENC_CHUNK_SIZE);
+  const blobParts = [header];
+
+  for (let i = 0; i < numChunks; i++) {
+    const start    = i * ENC_CHUNK_SIZE;
+    const sliceBuf = await file.slice(start, Math.min(start + ENC_CHUNK_SIZE, file.size))
+                               .arrayBuffer();
+
+    // Zero-pad to exactly ENC_CHUNK_SIZE — hides exact file size; zeros are
+    // indistinguishable from random after AES-GCM encryption
+    const plain = new Uint8Array(ENC_CHUNK_SIZE);
+    plain.set(new Uint8Array(sliceBuf));
+
+    const chunkIV  = crypto.getRandomValues(new Uint8Array(12));
+    const chunkAAD = ENC.encode(`${fileId}:${i}`); // binds chunk to position in this file
+    const encChunk = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: chunkIV, additionalData: chunkAAD }, key, plain
+    );
+
+    blobParts.push(chunkIV);
+    blobParts.push(new Uint8Array(encChunk));
+    onProgress?.(i + 1, numChunks);
+  }
+
+  return { body: new Blob(blobParts), fileId };
+}
+
+// ── v3: chunked decrypt (range request per 64 MiB chunk) ─────────────────────
+// headerEnd = 40 + ML (byte offset where the first chunk starts).
+// Returns a Blob of the reassembled plaintext.
+
+async function decryptFileV3(id, key, headerEnd, numChunks, meta, vload) {
+  const ON_WIRE = ENC_CHUNK_SIZE + 28; // 12 IV + ENC_CHUNK_SIZE plaintext + 16 GCM tag
+  const plaintextParts = [];
+
+  for (let i = 0; i < numChunks; i++) {
+    const start = headerEnd + i * ON_WIRE;
+    const end   = start + ON_WIRE - 1;
+    if (vload) vload.textContent = `Decrypting chunk ${i + 1}/${numChunks}…`;
+
+    const res = await fetch(`/file/${id}`, {
+      headers: authHeaders({ Range: `bytes=${start}-${end}` })
+    });
+    if (!res.ok && res.status !== 206) throw new Error(`HTTP ${res.status}`);
+
+    const raw      = new Uint8Array(await res.arrayBuffer());
+    const chunkIV  = raw.slice(0, 12);
+    const encChunk = raw.slice(12);
+    const chunkAAD = ENC.encode(`${id}:${i}`);
+
+    let plain;
+    try {
+      plain = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: chunkIV, additionalData: chunkAAD }, key, encChunk
+      );
+    } catch { throw new Error(i === 0 ? 'WRONG_PASSWORD' : 'CORRUPTED'); }
+
+    // Strip zero-padding from the last chunk using the true size in metadata
+    const actualBytes = (i === numChunks - 1)
+      ? meta.size - (numChunks - 1) * ENC_CHUNK_SIZE
+      : ENC_CHUNK_SIZE;
+    plaintextParts.push(new Uint8Array(plain, 0, actualBytes));
+  }
+
+  return new Blob(plaintextParts, { type: meta.mime });
+}
+
 // ── Fetch metadata only (range request for first 1 KB) ───────────────────────
 
 async function fetchMeta(id, password) {
@@ -641,6 +808,53 @@ function updateCountdown() {
   el.textContent = `Auto-lock in ${remaining}s`;
 }
 
+function lockVault(showNotice) {
+  clearTimeout(sessionTimer);
+  clearInterval(countdownTimer);
+  sessionTimer = countdownTimer = null;
+  for (const k of Object.keys(cache)) delete cache[k];
+  document.getElementById('pw').value = '';
+  updateStrengthBar('');
+  updateSessionUI();
+  document.getElementById('lock-pw').value = '';
+  document.getElementById('lock-err').textContent = '';
+  document.getElementById('lock-title').textContent =
+    showNotice ? 'Locked — Inactivity' : 'Vault Locked';
+  document.getElementById('vault-lock-overlay').classList.add('locked');
+  setTimeout(() => document.getElementById('lock-pw').focus(), 60);
+}
+
+async function unlockVault() {
+  const lockPw  = document.getElementById('lock-pw').value;
+  const lockErr = document.getElementById('lock-err');
+  const btn     = document.getElementById('lock-unlock-btn');
+  if (!lockPw) { lockErr.textContent = 'Enter your password.'; return; }
+  btn.disabled = true;
+  lockErr.textContent = '';
+
+  const fileIds = [...document.querySelectorAll('#file-list li .fname')]
+                    .map(el => el.title).filter(Boolean);
+  if (fileIds.length > 0) {
+    try {
+      await fetchMeta(fileIds[0], lockPw);
+    } catch (e) {
+      btn.disabled = false;
+      lockErr.textContent = e.message === 'WRONG_PASSWORD' ? 'Wrong password.' : `Error: ${e.message}`;
+      return;
+    }
+  }
+
+  document.getElementById('pw').value = lockPw;
+  document.getElementById('lock-pw').value = '';
+  document.getElementById('vault-lock-overlay').classList.remove('locked');
+  updateStrengthBar(lockPw);
+  updateSessionUI();
+  resetSessionTimer();
+  btn.disabled = false;
+  await loadFiles();
+  loadTrash();
+}
+
 function clearSession(showNotice) {
   clearTimeout(sessionTimer);
   clearInterval(countdownTimer);
@@ -662,15 +876,21 @@ function clearSession(showNotice) {
 }
 
 function resetSessionTimer() {
+  if (document.getElementById('vault-lock-overlay').classList.contains('locked')) return;
   clearTimeout(sessionTimer);
   clearInterval(countdownTimer);
   sessionDeadline = Date.now() + SESSION_MS;
-  sessionTimer   = setTimeout(() => clearSession(true), SESSION_MS);
+  sessionTimer   = setTimeout(() => lockVault(true), SESSION_MS);
   countdownTimer = setInterval(updateCountdown, 500);
   updateCountdown();
 }
 
-document.getElementById('lock-btn').addEventListener('click', () => clearSession(false));
+document.getElementById('lock-btn').addEventListener('click', () => lockVault(false));
+
+document.getElementById('lock-unlock-btn').addEventListener('click', unlockVault);
+document.getElementById('lock-pw').addEventListener('keydown', e => {
+  if (e.key === 'Enter') unlockVault();
+});
 
 // ── File list ─────────────────────────────────────────────────────────────────
 
@@ -715,6 +935,73 @@ async function loadFiles() {
   }
 }
 
+// ── Trash ─────────────────────────────────────────────────────────────────────
+
+async function loadTrash() {
+  const res = await fetch('/trash', { headers: authHeaders() });
+  if (!res.ok) return;
+  const { files } = await res.json();
+  const card  = document.getElementById('trash-card');
+  const list  = document.getElementById('trash-list');
+  const empty = document.getElementById('trash-empty-msg');
+  card.style.display = files.length ? '' : 'none';
+  list.innerHTML = '';
+  for (const item of files) {
+    const { id, trashed_at } = item;
+    const known = cache[id];
+    const li = document.createElement('li');
+    li.style.cssText = 'display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)';
+    const nameEl = document.createElement('span');
+    nameEl.className = known ? 'fname named' : 'fname';
+    nameEl.textContent = known ? known.name : `${id.slice(0, 8)}…`;
+    nameEl.title = id;
+    nameEl.style.flex = '1';
+    const date = new Date(trashed_at * 1000).toLocaleDateString();
+    const dateEl = document.createElement('span');
+    dateEl.style.cssText = 'font-size:10px;color:var(--muted);white-space:nowrap';
+    dateEl.textContent = date;
+    const restoreBtn = document.createElement('button');
+    restoreBtn.className = 'ghost';
+    restoreBtn.textContent = 'Restore';
+    restoreBtn.onclick = () => restoreFile(id, li);
+    const permDelBtn = document.createElement('button');
+    permDelBtn.className = 'danger';
+    permDelBtn.textContent = '×';
+    permDelBtn.title = 'Delete permanently';
+    permDelBtn.onclick = () => permanentDelete(id, li);
+    li.append(nameEl, dateEl, restoreBtn, permDelBtn);
+    list.appendChild(li);
+  }
+}
+
+async function restoreFile(id, li) {
+  const name = cache[id] ? cache[id].name : id.slice(0, 8) + '…';
+  if (!confirm(`Restore "${name}" to vault?`)) return;
+  const res = await fetch(`/trash/${id}/restore`, { method: 'POST', headers: authHeaders() });
+  if (res.ok || res.status === 404) {
+    li.remove();
+    if (!document.getElementById('trash-list').children.length)
+      document.getElementById('trash-card').style.display = 'none';
+    await loadFiles();
+  } else {
+    alert(`Restore failed: ${res.status}`);
+  }
+}
+
+async function permanentDelete(id, li) {
+  const name = cache[id] ? cache[id].name : id.slice(0, 8) + '…';
+  if (!confirm(`Permanently delete "${name}"?\n\nThis cannot be undone.`)) return;
+  const res = await fetch(`/trash/${id}`, { method: 'DELETE', headers: authHeaders() });
+  if (res.ok || res.status === 404) {
+    delete cache[id];
+    li.remove();
+    if (!document.getElementById('trash-list').children.length)
+      document.getElementById('trash-card').style.display = 'none';
+  } else {
+    alert(`Delete failed: ${res.status}`);
+  }
+}
+
 // ── Upload ────────────────────────────────────────────────────────────────────
 
 document.getElementById('upload-btn').addEventListener('click', async () => {
@@ -737,13 +1024,31 @@ document.getElementById('upload-btn').addEventListener('click', async () => {
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
     bar.style.width = `${Math.round(i / files.length * 100)}%`;
-    setStatus(`Encrypting ${f.name} (${i + 1}/${files.length})…`);
+    setStatus(`Deriving Argon2id key for ${f.name} (${i + 1}/${files.length}) — takes ~5s…`, 'warn');
+    await new Promise(r => setTimeout(r, 30));
 
     try {
-      const fileBuf = await f.arrayBuffer();
-      const { encBuf, fileId } = await encryptFile(
-        password, fileBuf, f.name, f.type || 'application/octet-stream'
-      );
+      let encBody, fileId;
+      if (f.size > ENC_CHUNK_SIZE) {
+        // v3 — chunked: read one 64 MiB slice at a time, never the whole file
+        const result = await encryptFileChunked(
+          password, f, f.name, f.type || 'application/octet-stream',
+          (done, total) => {
+            setStatus(`Encrypting ${f.name} — chunk ${done}/${total}…`);
+            bar.style.width = `${Math.round((done / total) * 85)}%`;
+          }
+        );
+        encBody = result.body;
+        fileId  = result.fileId;
+      } else {
+        // v2 — small file, existing single-block path
+        const fileBuf = await f.arrayBuffer();
+        const result = await encryptFile(
+          password, fileBuf, f.name, f.type || 'application/octet-stream'
+        );
+        encBody = result.encBuf;
+        fileId  = result.fileId;
+      }
       setStatus(`Uploading ${f.name}…`);
       const res = await fetch('/upload', {
         method: 'POST',
@@ -751,7 +1056,7 @@ document.getElementById('upload-btn').addEventListener('click', async () => {
           'Content-Type': 'application/octet-stream',
           'X-File-ID': fileId,
         }),
-        body: encBuf,
+        body: encBody,
       });
       if (!res.ok) throw new Error(`Server ${res.status}`);
       const { id } = await res.json();
@@ -811,6 +1116,7 @@ document.getElementById('reveal-btn').addEventListener('click', async () => {
 // ── Refresh ───────────────────────────────────────────────────────────────────
 
 document.getElementById('refresh-btn').addEventListener('click', loadFiles);
+document.getElementById('trash-refresh-btn').addEventListener('click', loadTrash);
 
 // ── View ──────────────────────────────────────────────────────────────────────
 
@@ -831,12 +1137,45 @@ async function viewFile(id, nameEl) {
   overlay.classList.add('open');
 
   try {
-    const res = await fetch(`/file/${id}`, { headers: authHeaders() });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // Step 1: fetch only the header (first 1 KB) to check version before downloading
+    vload.textContent = 'Reading header…';
+    const hdrRes = await fetch(`/file/${id}`, {
+      headers: authHeaders({ Range: 'bytes=0-1023' })
+    });
+    if (!hdrRes.ok && hdrRes.status !== 206) throw new Error(`HTTP ${hdrRes.status}`);
+    const hdrBuf = await hdrRes.arrayBuffer();
+    const hdr    = parseHeader(hdrBuf);
 
-    vload.textContent = 'Decrypting…';
-    const encBuf = await res.arrayBuffer();
-    const { plaintext, meta } = await decryptFile(password, encBuf, id);
+    let meta, blob;
+
+    if (hdr.version === 3) {
+      // v3 — chunked: derive key once, decrypt metadata, then fetch chunks
+      vload.textContent = 'Deriving key…';
+      const key     = await deriveKey(password, hdr.salt, 3);
+      const metaAAD = ENC.encode(id);
+      const hdrU8   = new Uint8Array(hdrBuf);
+      try {
+        const mb = await crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: hdr.metaIV, additionalData: metaAAD },
+          key, hdrU8.slice(40, 40 + hdr.ML)
+        );
+        meta = JSON.parse(DEC.decode(mb).replace(/\0+$/, ''));
+      } catch { throw new Error('WRONG_PASSWORD'); }
+
+      const numChunks = Math.ceil(meta.size / ENC_CHUNK_SIZE);
+      blob = await decryptFileV3(id, key, 40 + hdr.ML, numChunks, meta, vload);
+
+    } else {
+      // v1/v2 — single block: download full file, decrypt in one shot
+      vload.textContent = 'Downloading…';
+      const res = await fetch(`/file/${id}`, { headers: authHeaders() });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      vload.textContent = 'Decrypting…';
+      const encBuf = await res.arrayBuffer();
+      const result = await decryptFile(password, encBuf, id);
+      meta = result.meta;
+      blob = new Blob([result.plaintext], { type: meta.mime });
+    }
 
     cache[id] = meta;
     vname.textContent = meta.name;
@@ -848,12 +1187,11 @@ async function viewFile(id, nameEl) {
 
     if (mtype === 'text') {
       const pre = document.createElement('pre');
-      pre.textContent = DEC.decode(plaintext);
+      pre.textContent = await blob.text();
       vcont.appendChild(pre);
       return;
     }
 
-    const blob = new Blob([plaintext], { type: mime });
     const url  = trackUrl(URL.createObjectURL(blob));
 
     if (mtype === 'image') {
@@ -914,7 +1252,7 @@ window.addEventListener('beforeunload', revokeAll);
 
 async function deleteFile(id, li) {
   const name = cache[id] ? cache[id].name : id.slice(0, 8) + '…';
-  if (!confirm(`Delete "${name}"?\n\nThis cannot be undone.`)) return;
+  if (!confirm(`Move "${name}" to Trash?\n\nRestoration available for ${TRASH_DAYS} days.`)) return;
 
   const res = await fetch(`/file/${id}`, {
     method: 'DELETE',
@@ -925,6 +1263,7 @@ async function deleteFile(id, li) {
     li.remove();
     document.getElementById('empty-msg').style.display =
       document.getElementById('file-list').children.length ? 'none' : '';
+    loadTrash();
   } else {
     alert(`Delete failed: ${res.status}`);
   }
@@ -962,12 +1301,14 @@ document.getElementById('url-btn').addEventListener('click', async () => {
     if (!res.ok) throw new Error((await res.text()) || `Server error ${res.status}`);
 
     bar.style.width = '45%';
-    setStatus('Encrypting…');
+    setStatus('Deriving Argon2id key — takes ~5s…', 'warn');
+    await new Promise(r => setTimeout(r, 30));
 
     const mime    = (res.headers.get('Content-Type') || 'application/octet-stream').split(';')[0].trim();
     const rawName = res.headers.get('X-Filename') || 'download';
     const name    = decodeURIComponent(rawName);
     const fileBuf = await res.arrayBuffer();
+    setStatus('Encrypting…');
 
     bar.style.width = '65%';
     const { encBuf, fileId } = await encryptFile(password, fileBuf, name, mime);
@@ -1085,7 +1426,9 @@ document.getElementById('pw').addEventListener('input', () => {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 resetSessionTimer();
+lockVault(false);
 loadFiles();
+loadTrash();
 </script>
 </body>
 </html>

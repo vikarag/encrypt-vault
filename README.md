@@ -34,8 +34,9 @@ Decrypt in browser → display
 **Metadata:** encrypted separately; decrypted first to fail fast on wrong passwords  
 **Size obfuscation:** files padded to the nearest power-of-2 bucket (≤128 MB) or 16 MB boundary  
 **Authentication:** bearer token in `.api-token` (gitignored), injected into page at serve time  
-**Secure delete:** files overwritten with random bytes + fsync before unlink  
-**Session:** 60-second inactivity lock; manual "Lock Now" button  
+**Soft delete / Trash:** deleted files move to `files/trash/` with a 7-day recovery window; permanently purged with secure overwrite after expiry  
+**Secure delete:** permanent deletion overwrites with random bytes + fsync before unlink  
+**Session:** 60-second inactivity lock shows a vault overlay (file list preserved behind blur); manual "Lock Now" button  
 **Password enforcement:** minimum 60 bits of entropy required before encryption
 
 ## Requirements
@@ -160,10 +161,12 @@ sudo systemctl enable --now vault.service
 | **Fetch from URL** | Paste a URL → Fetch & Encrypt (server fetches, browser encrypts) |
 | **View a file** | Click View next to a file, enter password |
 | **Reveal filenames** | Click "Reveal Names" — decrypts metadata only (fast, no full download) |
-| **Delete a file** | Click × next to a file |
+| **Delete a file** | Click × next to a file — moves to Trash (recoverable for 7 days) |
+| **Restore from Trash** | Click Restore in the Trash card — file returns to main vault |
+| **Permanently delete** | Click × in the Trash card — secure-overwrites immediately |
 | **Virtual keyboard** | Click ⌨ next to the password field — keys are shuffled on every open |
 
-Session auto-clears after 10 minutes of inactivity (password wiped, viewer closed, clipboard cleared).
+After 60 seconds of inactivity the vault locks: a fullscreen overlay appears and the password must be re-entered to resume (file list stays loaded behind the blur). The "Lock Now" button triggers this immediately.
 
 ## Server options
 
@@ -219,7 +222,7 @@ Each `.enc` file is a self-contained binary blob:
 Offset   Len   Field
 ──────   ───   ─────────────────────────────────────────────────────────────
 0        4     Magic: "ENCF"
-4        2     Version: 0x0001 = PBKDF2-SHA256 (legacy) | 0x0002 = Argon2id (current)
+4        2     Version: 0x0001 = PBKDF2-SHA256 (legacy) | 0x0002 = Argon2id | 0x0003 = Argon2id + chunked (>64 MiB)
 6        2     Flags: 0x0000
 8        4     MetaLen: length of EncryptedMeta (big-endian)
 12       16    Salt (random, per-file KDF input)
