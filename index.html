@@ -283,66 +283,12 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   max-width: 660px;
 }
 
-/* ── Vault lock overlay ──────────────────────────────── */
-#vault-lock-overlay {
-  display: none;
-  position: fixed;
-  inset: 0;
-  z-index: 500;
-  background: rgba(13,13,13,0.85);
-  backdrop-filter: blur(5px);
-  -webkit-backdrop-filter: blur(5px);
-  justify-content: center;
-  align-items: center;
-}
-#vault-lock-overlay.locked { display: flex; }
-#lock-box {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 36px 32px 28px;
-  width: 100%;
-  max-width: 340px;
-  text-align: center;
-}
-#lock-icon { font-size: 40px; margin-bottom: 14px; }
-#lock-title {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  margin-bottom: 20px;
-}
-#lock-pw {
-  width: 100%;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text);
-  padding: 8px 12px;
-  font-family: inherit;
-  font-size: 13px;
-  margin-bottom: 10px;
-}
-#lock-pw:focus { outline: none; border-color: var(--accent); }
-#lock-unlock-btn { width: 100%; margin-bottom: 8px; }
-#lock-err { font-size: 11px; color: var(--danger); min-height: 16px; }
 </style>
 </head>
 <body>
 
 <div id="timeout-notice">Session cleared after inactivity — re-enter your password to continue.</div>
 
-<div id="vault-lock-overlay">
-  <div id="lock-box">
-    <div id="lock-icon">&#128274;</div>
-    <div id="lock-title">Vault Locked</div>
-    <input type="password" id="lock-pw" placeholder="Master password"
-           autocomplete="current-password" spellcheck="false">
-    <button class="primary" id="lock-unlock-btn">Unlock</button>
-    <div id="lock-err"></div>
-  </div>
-</div>
 
 <div class="vault-header">
   <h1>⬡ Vault</h1>
@@ -808,36 +754,6 @@ function updateCountdown() {
   el.textContent = `Auto-lock in ${remaining}s`;
 }
 
-function lockVault(showNotice) {
-  clearTimeout(sessionTimer);
-  clearInterval(countdownTimer);
-  sessionTimer = countdownTimer = null;
-  for (const k of Object.keys(cache)) delete cache[k];
-  document.getElementById('pw').value = '';
-  updateStrengthBar('');
-  updateSessionUI();
-  document.getElementById('lock-pw').value = '';
-  document.getElementById('lock-err').textContent = '';
-  document.getElementById('lock-title').textContent =
-    showNotice ? 'Locked — Inactivity' : 'Vault Locked';
-  document.getElementById('vault-lock-overlay').classList.add('locked');
-  setTimeout(() => document.getElementById('lock-pw').focus(), 60);
-}
-
-async function unlockVault() {
-  const lockPw  = document.getElementById('lock-pw').value;
-  const lockErr = document.getElementById('lock-err');
-  const btn     = document.getElementById('lock-unlock-btn');
-  if (!lockPw) { lockErr.textContent = 'Enter your password.'; return; }
-  document.getElementById('pw').value = lockPw;
-  document.getElementById('lock-pw').value = '';
-  document.getElementById('vault-lock-overlay').classList.remove('locked');
-  updateStrengthBar(lockPw);
-  updateSessionUI();
-  resetSessionTimer();
-  await loadFiles();
-  loadTrash();
-}
 
 function clearSession(showNotice) {
   clearTimeout(sessionTimer);
@@ -860,21 +776,15 @@ function clearSession(showNotice) {
 }
 
 function resetSessionTimer() {
-  if (document.getElementById('vault-lock-overlay').classList.contains('locked')) return;
   clearTimeout(sessionTimer);
   clearInterval(countdownTimer);
   sessionDeadline = Date.now() + SESSION_MS;
-  sessionTimer   = setTimeout(() => lockVault(true), SESSION_MS);
+  sessionTimer   = setTimeout(() => clearSession(true), SESSION_MS);
   countdownTimer = setInterval(updateCountdown, 500);
   updateCountdown();
 }
 
-document.getElementById('lock-btn').addEventListener('click', () => lockVault(false));
-
-document.getElementById('lock-unlock-btn').addEventListener('click', unlockVault);
-document.getElementById('lock-pw').addEventListener('keydown', e => {
-  if (e.key === 'Enter') unlockVault();
-});
+document.getElementById('lock-btn').addEventListener('click', () => clearSession(false));
 
 // ── File list ─────────────────────────────────────────────────────────────────
 
@@ -1410,7 +1320,6 @@ document.getElementById('pw').addEventListener('input', () => {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 resetSessionTimer();
-lockVault(false);
 loadFiles();
 loadTrash();
 </script>
