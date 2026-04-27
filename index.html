@@ -10,246 +10,670 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:      #08080c;
-  --surface: #101014;
-  --border:  #1e1e28;
-  --text:    #e0e0e8;
-  --muted:   #50505e;
-  --accent:  #4a9eff;
-  --danger:  #e05555;
-  --ok:      #50c878;
-  --warn:    #e0c055;
+  /* Surfaces */
+  --bg-0:        #0a0b0f;
+  --bg-1:        #0f1117;
+  --bg-2:        #14161f;
+  --surface:     rgba(22, 24, 33, 0.72);
+  --surface-2:   rgba(28, 30, 42, 0.85);
+  --surface-hi:  rgba(40, 43, 58, 0.6);
+  --border:      rgba(255, 255, 255, 0.06);
+  --border-hi:   rgba(255, 255, 255, 0.12);
+  --border-acc:  rgba(120, 145, 255, 0.4);
+
+  /* Text */
+  --text:        #e8e9f0;
+  --text-soft:   #a8aabc;
+  --muted:       #6b6e80;
+  --muted-2:     #4a4d5e;
+
+  /* Brand */
+  --accent:      #7891ff;
+  --accent-2:    #a78bfa;
+  --accent-hi:   #94aaff;
+  --gradient:    linear-gradient(135deg, #7891ff 0%, #a78bfa 100%);
+  --gradient-soft: linear-gradient(135deg, rgba(120,145,255,0.18) 0%, rgba(167,139,250,0.18) 100%);
+
+  /* Status */
+  --danger:      #ef5572;
+  --danger-soft: rgba(239, 85, 114, 0.12);
+  --ok:          #34d399;
+  --ok-soft:     rgba(52, 211, 153, 0.12);
+  --warn:        #f59e0b;
+  --warn-soft:   rgba(245, 158, 11, 0.12);
+
+  /* Effects */
+  --shadow-sm:   0 1px 2px rgba(0,0,0,0.3);
+  --shadow-md:   0 4px 24px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-lg:   0 16px 48px rgba(0,0,0,0.55), 0 2px 6px rgba(0,0,0,0.4);
+  --shadow-glow: 0 0 0 1px rgba(120,145,255,0.25), 0 8px 32px rgba(120,145,255,0.18);
+
+  /* Geometry */
+  --radius-sm:   8px;
+  --radius:      14px;
+  --radius-lg:   20px;
+
+  --font-sans:   'Inter', ui-sans-serif, system-ui, -apple-system, 'SF Pro Display', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono:   ui-monospace, 'SF Mono', 'JetBrains Mono', 'Cascadia Code', 'Roboto Mono', monospace;
 }
+
+html, body { height: 100%; }
 
 body {
-  background: var(--bg);
+  background: var(--bg-0);
   color: var(--text);
-  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  padding: 32px 24px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "ss01", "cv11";
+  letter-spacing: -0.005em;
+  overflow-x: hidden;
 }
 
-/* ── Header ──────────────────────────────────────────── */
+/* ── Ambient background ─────────────────────────────────── */
 
-.vault-header {
+body::before, body::after {
+  content: "";
+  position: fixed;
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(80px);
+  opacity: 0.55;
+}
+body::before {
+  top: -200px; left: -200px;
+  width: 600px; height: 600px;
+  background: radial-gradient(circle at 30% 30%, rgba(120,145,255,0.35), transparent 60%);
+}
+body::after {
+  bottom: -200px; right: -200px;
+  width: 700px; height: 700px;
+  background: radial-gradient(circle at 70% 70%, rgba(167,139,250,0.28), transparent 60%);
+}
+
+/* ── App shell ──────────────────────────────────────────── */
+
+.app {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  min-height: 100vh;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+@media (max-width: 880px) {
+  .app { grid-template-columns: 1fr; }
+}
+
+/* ── Sidebar ────────────────────────────────────────────── */
+
+.sidebar {
+  padding: 28px 22px;
+  border-right: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(15,17,23,0.6) 0%, rgba(10,11,15,0.3) 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
+@media (max-width: 880px) {
+  .sidebar {
+    position: static;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    flex-direction: row;
+    align-items: center;
+    padding: 18px 22px;
+    gap: 16px;
+  }
+  .sidebar-nav, .sidebar-footer { display: none; }
+}
+
+.brand {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 28px;
-  max-width: 660px;
 }
 
-h1 {
+.brand-mark {
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  background: var(--gradient);
+  display: grid;
+  place-items: center;
+  color: #fff;
+  box-shadow: 0 6px 20px rgba(120,145,255,0.35), inset 0 1px 0 rgba(255,255,255,0.25);
+  flex-shrink: 0;
+}
+
+.brand-mark svg { width: 20px; height: 20px; }
+
+.brand-text { display: flex; flex-direction: column; line-height: 1.2; }
+
+.brand-name {
   font-size: 15px;
   font-weight: 700;
-  letter-spacing: 0.16em;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.brand-sub {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  background: linear-gradient(120deg, var(--accent) 0%, #a0c8ff 100%);
+  font-weight: 500;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+  padding: 0 12px;
+  margin-bottom: 8px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  color: var(--text-soft);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  user-select: none;
+}
+
+.nav-item:hover { background: rgba(255,255,255,0.04); color: var(--text); }
+
+.nav-item.active {
+  background: var(--gradient-soft);
+  color: var(--text);
+}
+
+.nav-item svg { width: 16px; height: 16px; flex-shrink: 0; opacity: 0.85; }
+
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.security-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(52, 211, 153, 0.08);
+  border: 1px solid rgba(52, 211, 153, 0.18);
+  font-size: 11px;
+  color: var(--ok);
+  font-weight: 500;
+}
+
+.security-pill .pulse {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.6);
+  animation: pulse 2.4s infinite;
+  flex-shrink: 0;
+}
+
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
+  70%  { box-shadow: 0 0 0 8px rgba(52, 211, 153, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+}
+
+/* ── Main area ──────────────────────────────────────────── */
+
+.main {
+  padding: 36px 40px 60px;
+  min-width: 0;
+}
+
+@media (max-width: 880px) {
+  .main { padding: 24px 18px 40px; }
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 28px;
+  flex-wrap: wrap;
+}
+
+.topbar-left h1 {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: linear-gradient(120deg, #fff 0%, #c8cce8 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  flex: 1;
 }
+
+.topbar-left p {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+.topbar-right { display: flex; align-items: center; gap: 12px; }
 
 #session-countdown {
-  font-size: 10px;
-  color: var(--muted);
   display: none;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+  padding: 7px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
   white-space: nowrap;
-  letter-spacing: 0.04em;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
-#lock-btn {
-  display: none;
-  font-size: 11px;
-  padding: 4px 10px;
+#session-countdown::before {
+  content: "";
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
 }
 
-/* ── Cards ───────────────────────────────────────────── */
+#lock-btn { display: none; }
+
+/* ── Grid layout for cards ──────────────────────────────── */
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 980px) {
+  .grid { grid-template-columns: 1fr; }
+}
+
+.span-full { grid-column: 1 / -1; }
+
+/* ── Cards ──────────────────────────────────────────────── */
 
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 20px 22px;
-  margin-bottom: 12px;
-  max-width: 660px;
-  box-shadow: 0 2px 20px rgba(0,0,0,0.45);
-  transition: box-shadow 0.2s;
+  border-radius: var(--radius);
+  padding: 22px 24px;
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  box-shadow: var(--shadow-md);
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+  position: relative;
 }
+
+.card:hover { border-color: var(--border-hi); }
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.card-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--gradient-soft);
+  border: 1px solid var(--border-hi);
+  display: grid;
+  place-items: center;
+  color: var(--accent-hi);
+  flex-shrink: 0;
+}
+
+.card-icon svg { width: 17px; height: 17px; }
+
+.card-title-group { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 
 .card-title {
-  font-size: 10px;
+  font-size: 14px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.18em;
-  color: var(--muted);
-  margin-bottom: 14px;
+  letter-spacing: -0.005em;
+  color: var(--text);
+  margin: 0;
 }
 
-/* ── Labels & layout ─────────────────────────────────── */
+.card-sub {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 1px;
+}
 
-label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 5px; letter-spacing: 0.04em; }
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Labels & rows ──────────────────────────────────────── */
+
+label {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  margin-bottom: 6px;
+  letter-spacing: 0.02em;
+}
 
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
-/* ── Inputs ──────────────────────────────────────────── */
+/* ── Inputs ─────────────────────────────────────────────── */
 
 input[type="password"],
-input[type="file"],
 input[type="url"] {
   width: 100%;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: var(--bg-1);
+  border: 1px solid var(--border-hi);
+  border-radius: 10px;
   color: var(--text);
-  padding: 8px 12px;
-  font-family: inherit;
-  font-size: 13px;
+  padding: 11px 14px;
+  font-family: var(--font-sans);
+  font-size: 14px;
   outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
+}
+
+input[type="password"] {
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
+input[type="password"]::placeholder,
+input[type="url"]::placeholder {
+  color: var(--muted-2);
+  letter-spacing: 0;
+  font-family: var(--font-sans);
 }
 
 input[type="password"]:focus,
 input[type="url"]:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(74,158,255,0.1);
+  background: var(--bg-0);
+  box-shadow: 0 0 0 4px rgba(120,145,255,0.12);
 }
 
-/* ── Buttons ─────────────────────────────────────────── */
-
-button {
-  background: #18181f;
-  border: 1px solid #28283a;
-  border-radius: 6px;
-  color: var(--text);
+input[type="file"] {
+  display: block;
+  width: 100%;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text-soft);
+  padding: 14px;
+  background: var(--bg-1);
+  border: 1px dashed var(--border-hi);
+  border-radius: 10px;
   cursor: pointer;
+  transition: border-color 0.18s, background 0.18s;
+}
+
+input[type="file"]:hover {
+  border-color: var(--accent);
+  background: rgba(120,145,255,0.04);
+}
+
+input[type="file"]::file-selector-button {
+  background: var(--surface-hi);
+  border: 1px solid var(--border-hi);
+  border-radius: 7px;
+  color: var(--text);
+  padding: 6px 12px;
+  margin-right: 12px;
   font-family: inherit;
   font-size: 12px;
-  padding: 6px 14px;
-  white-space: nowrap;
-  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s, color 0.15s, opacity 0.15s;
-  letter-spacing: 0.02em;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
 }
+
+input[type="file"]::file-selector-button:hover {
+  background: var(--surface-2);
+}
+
+/* ── Buttons ────────────────────────────────────────────── */
+
+button {
+  background: var(--surface-hi);
+  border: 1px solid var(--border-hi);
+  border-radius: 9px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 14px;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, transform 0.05s, box-shadow 0.15s, color 0.15s, opacity 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: -0.005em;
+  line-height: 1.2;
+}
+
+button svg { width: 14px; height: 14px; }
 
 button:hover:not(:disabled) {
-  background: #202030;
-  border-color: #36364e;
+  background: var(--surface-2);
+  border-color: rgba(255,255,255,0.18);
 }
 
-button:disabled { opacity: 0.35; cursor: not-allowed; }
+button:active:not(:disabled) { transform: translateY(1px); }
+
+button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #000;
-  font-weight: 700;
+  background: var(--gradient);
+  border-color: transparent;
+  color: #0c0d12;
+  font-weight: 600;
+  box-shadow: 0 2px 12px rgba(120,145,255,0.25), inset 0 1px 0 rgba(255,255,255,0.2);
 }
 
 .primary:hover:not(:disabled) {
-  background: #6ab4ff;
-  border-color: #6ab4ff;
-  box-shadow: 0 0 18px rgba(74,158,255,0.3);
+  background: linear-gradient(135deg, #94aaff 0%, #c0a8ff 100%);
+  border-color: transparent;
+  box-shadow: 0 4px 22px rgba(120,145,255,0.45), inset 0 1px 0 rgba(255,255,255,0.25);
 }
 
 .ghost {
   background: transparent;
-  border-color: var(--border);
-  color: var(--muted);
+  border-color: var(--border-hi);
+  color: var(--text-soft);
 }
 
 .ghost:hover:not(:disabled) {
   color: var(--text);
-  border-color: #30303e;
   background: rgba(255,255,255,0.04);
+  border-color: rgba(255,255,255,0.2);
 }
 
 .danger {
   background: transparent;
   border-color: transparent;
   color: var(--muted);
+  padding: 8px 10px;
 }
 
 .danger:hover:not(:disabled) {
-  background: rgba(224,85,85,0.1);
-  border-color: var(--danger);
+  background: var(--danger-soft);
+  border-color: rgba(239,85,114,0.35);
   color: var(--danger);
 }
 
-/* ── Strength bar ─────────────────────────────────────── */
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  justify-content: center;
+}
 
-#pw-strength-wrap { display: none; margin-top: 8px; }
+/* ── Strength bar ───────────────────────────────────────── */
+
+#pw-strength-wrap {
+  display: none;
+  margin-top: 12px;
+}
 
 #pw-strength-track {
-  height: 3px;
-  background: var(--border);
-  border-radius: 2px;
+  height: 6px;
+  background: var(--bg-1);
+  border-radius: 3px;
   overflow: hidden;
+  border: 1px solid var(--border);
 }
 
 #pw-strength-bar {
   height: 100%;
   width: 0;
-  transition: width 0.2s, background-color 0.2s;
-  border-radius: 2px;
+  transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.25s;
+  border-radius: 3px;
+  box-shadow: 0 0 8px currentColor;
 }
 
 #pw-strength-label {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
-  margin-top: 4px;
-  letter-spacing: 0.04em;
+  margin-top: 7px;
+  font-weight: 500;
+  letter-spacing: 0.005em;
 }
 
-/* ── Progress bar ─────────────────────────────────────── */
+/* ── Progress bar ───────────────────────────────────────── */
 
 .progress {
-  height: 3px;
-  background: var(--border);
-  border-radius: 2px;
-  margin-top: 12px;
+  height: 6px;
+  background: var(--bg-1);
+  border-radius: 3px;
+  margin-top: 14px;
   overflow: hidden;
   display: none;
+  border: 1px solid var(--border);
 }
 
 .progress-bar {
   height: 100%;
-  background: var(--accent);
+  background: var(--gradient);
   width: 0;
-  transition: width 0.25s;
-  border-radius: 2px;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 3px;
+  box-shadow: 0 0 12px rgba(120,145,255,0.45);
 }
 
-/* ── Status message ───────────────────────────────────── */
+/* ── Status message ─────────────────────────────────────── */
 
 .status {
-  font-size: 11px;
-  margin-top: 8px;
-  min-height: 16px;
-  color: var(--text);
-  letter-spacing: 0.02em;
+  font-size: 12px;
+  margin-top: 10px;
+  min-height: 18px;
+  color: var(--text-soft);
+  font-weight: 500;
 }
 
 .status.ok   { color: var(--ok); }
 .status.err  { color: var(--danger); }
 .status.warn { color: var(--warn); }
 
-/* ── File list ────────────────────────────────────────── */
+/* ── Divider ───────────────────────────────────────────── */
 
-#file-list { list-style: none; }
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 18px 0;
+}
+
+.divider-text {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+
+.divider-text::before, .divider-text::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* ── File list ─────────────────────────────────────────── */
+
+#file-list, #trash-list { list-style: none; }
 
 #file-list li {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  margin: 0 -10px;
-  border-radius: 7px;
-  transition: background 0.12s;
+  gap: 10px;
+  padding: 10px 12px;
+  margin: 0 -12px;
+  border-radius: 10px;
+  transition: background 0.15s;
+  border-bottom: 1px solid transparent;
 }
 
-#file-list li:hover { background: rgba(255,255,255,0.04); }
+#file-list li:hover {
+  background: rgba(255,255,255,0.035);
+}
+
+#file-list li::before {
+  content: "";
+  width: 28px; height: 28px;
+  border-radius: 8px;
+  background: var(--surface-hi);
+  border: 1px solid var(--border);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237891ff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/><polyline points='14 2 14 8 20 8'/></svg>");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 14px;
+  flex-shrink: 0;
+}
 
 .fname {
   flex: 1;
@@ -257,192 +681,447 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  letter-spacing: -0.01em;
 }
 
-.fname.named { color: var(--text); }
+.fname.named {
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
 
-#empty-msg { color: var(--muted); padding: 6px 0; font-size: 12px; }
+#empty-msg, #trash-empty-msg {
+  color: var(--muted);
+  padding: 28px 0;
+  font-size: 13px;
+  text-align: center;
+  font-style: italic;
+}
 
-/* ── Timeout notice ───────────────────────────────────── */
+/* ── Trash ──────────────────────────────────────────────── */
+
+#trash-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px !important;
+  margin: 0 -12px;
+  border-radius: 10px;
+  border-bottom: 1px solid transparent !important;
+  transition: background 0.15s;
+}
+
+#trash-list li:hover { background: rgba(255,255,255,0.035); }
+
+#trash-list li::before {
+  content: "";
+  width: 28px; height: 28px;
+  border-radius: 8px;
+  background: var(--danger-soft);
+  border: 1px solid rgba(239,85,114,0.18);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ef5572' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='3 6 5 6 21 6'/><path d='M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6'/><path d='M10 11v6'/><path d='M14 11v6'/></svg>");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 14px;
+  flex-shrink: 0;
+}
+
+#trash-list li > span:nth-child(2) {
+  font-size: 11px !important;
+  color: var(--muted) !important;
+  font-family: var(--font-mono);
+  background: var(--surface-hi);
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+/* ── Timeout notice ─────────────────────────────────────── */
 
 #timeout-notice {
   display: none;
-  background: rgba(74,158,255,0.08);
-  border: 1px solid rgba(74,158,255,0.22);
-  border-radius: 8px;
-  color: var(--accent);
-  font-size: 11px;
-  padding: 9px 14px;
-  margin-bottom: 16px;
-  max-width: 660px;
-  letter-spacing: 0.03em;
+  background: var(--gradient-soft);
+  border: 1px solid var(--border-acc);
+  border-radius: var(--radius);
+  color: var(--accent-hi);
+  font-size: 13px;
+  padding: 14px 18px;
+  margin-bottom: 20px;
+  font-weight: 500;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  align-items: center;
+  gap: 10px;
 }
 
-/* ── Viewer overlay ───────────────────────────────────── */
+#timeout-notice::before {
+  content: "";
+  width: 18px; height: 18px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394aaff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='10'/><polyline points='12 6 12 12 16 14'/></svg>");
+  background-repeat: no-repeat;
+  background-size: contain;
+  flex-shrink: 0;
+}
+
+/* ── Viewer overlay ─────────────────────────────────────── */
 
 #viewer {
   display: none;
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.9);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  background: rgba(8, 9, 13, 0.78);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
   z-index: 200;
   overflow-y: auto;
-  padding: 28px 20px;
+  padding: 32px 24px;
+  animation: fadeIn 0.18s ease-out;
+}
+
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.96) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 #viewer.open { display: flex; justify-content: center; align-items: flex-start; }
 
 #vbox {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 14px;
+  background: var(--bg-1);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--radius-lg);
   width: 100%;
-  max-width: 920px;
-  padding: 20px 22px;
-  box-shadow: 0 8px 48px rgba(0,0,0,0.7);
+  max-width: 940px;
+  padding: 22px 24px;
+  box-shadow: var(--shadow-lg);
+  animation: scaleIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 #vhead {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
-  gap: 12px;
+  margin-bottom: 18px;
+  gap: 14px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
 }
 
 #vname {
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 600;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  letter-spacing: -0.005em;
 }
 
-#vloading { color: var(--muted); padding: 40px 0; text-align: center; font-size: 12px; }
+#vname::before {
+  content: "";
+  display: inline-block;
+  width: 14px; height: 14px;
+  margin-right: 8px;
+  vertical-align: -2px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237891ff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'/></svg>");
+  background-repeat: no-repeat;
+  background-size: contain;
+}
 
-#vcontent img  { max-width: 100%; max-height: 82vh; display: block; margin: 0 auto; border-radius: 6px; }
+#vloading {
+  color: var(--text-soft);
+  padding: 64px 0;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+#vloading::before {
+  content: "";
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  border: 2px solid var(--border-hi);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+#vcontent img  { max-width: 100%; max-height: 82vh; display: block; margin: 0 auto; border-radius: 10px; box-shadow: var(--shadow-sm); }
 #vcontent audio,
-#vcontent video { width: 100%; border-radius: 6px; }
-#vcontent embed { width: 100%; height: 82vh; display: block; border-radius: 6px; }
+#vcontent video { width: 100%; border-radius: 10px; }
+#vcontent embed { width: 100%; height: 82vh; display: block; border-radius: 10px; }
 #vcontent pre  {
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 82vh;
   overflow: auto;
-  background: var(--bg);
+  background: var(--bg-0);
   border: 1px solid var(--border);
-  padding: 16px;
-  border-radius: 8px;
-  font-size: 12px;
-  line-height: 1.7;
+  padding: 18px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.75;
   color: var(--text);
+  font-family: var(--font-mono);
 }
-#vcontent .dl-msg { color: var(--muted); padding: 30px 0; font-size: 12px; text-align: center; }
+#vcontent .dl-msg {
+  color: var(--text-soft);
+  padding: 40px 0;
+  font-size: 13px;
+  text-align: center;
+  font-weight: 500;
+}
 
-/* ── Virtual keyboard ─────────────────────────────────── */
+/* ── Virtual keyboard ───────────────────────────────────── */
 
 #vkb-panel {
   display: none;
   flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 12px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px;
+  gap: 5px;
+  margin-top: 14px;
+  background: var(--bg-1);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--radius);
+  padding: 14px;
   -webkit-user-select: none;
   user-select: none;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
 }
 
-#vkb-panel.open { display: flex; }
+#vkb-panel.open { display: flex; animation: scaleIn 0.18s ease-out; }
 
 .vk-key {
-  font-size: 12px;
-  padding: 5px 7px;
-  min-width: 30px;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 7px 9px;
+  min-width: 34px;
   text-align: center;
-  background: #18181f;
-  border: 1px solid #28283a;
-  border-radius: 5px;
+  background: var(--surface-hi);
+  border: 1px solid var(--border-hi);
+  border-radius: 7px;
   color: var(--text);
   cursor: pointer;
-  font-family: inherit;
-  transition: background 0.1s, border-color 0.1s;
+  font-family: var(--font-mono);
+  transition: background 0.1s, border-color 0.1s, transform 0.05s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.vk-key:hover { background: #202030; border-color: #36364e; }
-.vk-bs    { color: var(--danger); min-width: 42px; }
-.vk-clear { color: var(--muted);  min-width: 42px; font-size: 11px; }
+.vk-key:hover { background: var(--surface-2); border-color: rgba(255,255,255,0.2); }
+.vk-key:active { transform: scale(0.94); }
 
-#vkb-counter { font-size: 11px; color: var(--muted); margin-top: 6px; min-height: 16px; letter-spacing: 0.04em; }
+.vk-bs    { color: var(--danger); min-width: 48px; font-family: var(--font-sans); }
+.vk-clear { color: var(--muted-2); min-width: 56px; font-size: 11px; font-family: var(--font-sans); font-weight: 500; }
+
+#vkb-counter {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 8px;
+  min-height: 16px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+  font-weight: 500;
+}
+
+/* ── Scrollbar ──────────────────────────────────────────── */
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.06);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.12); background-clip: padding-box; border: 2px solid transparent; }
+
+/* ── Selection ──────────────────────────────────────────── */
+
+::selection { background: rgba(120,145,255,0.32); color: #fff; }
 
 </style>
 </head>
 <body>
 
-<div id="timeout-notice">Session cleared after inactivity — re-enter your password to continue.</div>
+<div class="app">
 
+  <!-- ───── Sidebar ───── -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          <path d="M9 12l2 2 4-4"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <span class="brand-name">Vault</span>
+        <span class="brand-sub">Encrypted</span>
+      </div>
+    </div>
 
-<div class="vault-header">
-  <h1>⬡ Vault</h1>
-  <span id="session-countdown"></span>
-  <button class="ghost" id="lock-btn" title="Lock the vault immediately">Lock Now</button>
-</div>
+    <nav class="sidebar-nav">
+      <div class="nav-label">Workspace</div>
+      <div class="nav-item active">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        <span>Files</span>
+      </div>
+      <div class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <span>Upload</span>
+      </div>
+      <div class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d='M14 11v6'/></svg>
+        <span>Trash</span>
+      </div>
+    </nav>
 
-<div class="card">
-  <div class="card-title">Password</div>
-  <div class="row">
-    <input type="password" id="pw" placeholder="Master password" autocomplete="off" spellcheck="false" style="flex:1">
-    <button class="ghost" id="vkb-btn" title="Virtual keyboard (shuffled on each open)">⌨</button>
-  </div>
-  <div id="pw-strength-wrap">
-    <div id="pw-strength-track"><div id="pw-strength-bar"></div></div>
-    <div id="pw-strength-label"></div>
-  </div>
-  <div id="vkb-panel"></div>
-  <div id="vkb-counter"></div>
-</div>
+    <div class="sidebar-footer">
+      <div class="security-pill">
+        <span class="pulse"></span>
+        <span>Argon2id &middot; AES-256-GCM</span>
+      </div>
+      <div style="font-size:10px;color:var(--muted-2);text-align:center;letter-spacing:0.04em;">Zero-knowledge &middot; Client-side</div>
+    </div>
+  </aside>
 
-<div class="card">
-  <div class="card-title">Upload</div>
-  <input type="file" id="picker" multiple>
-  <div class="row" style="margin-top:10px">
-    <button class="primary" id="upload-btn">Encrypt &amp; Upload</button>
-  </div>
+  <!-- ───── Main ───── -->
+  <main class="main">
 
-  <div style="border-top:1px solid var(--border);margin:14px 0"></div>
+    <div id="timeout-notice">Session cleared after inactivity &mdash; re-enter your password to continue.</div>
 
-  <label for="url-input">Fetch from URL</label>
-  <div class="row" style="margin-top:4px">
-    <input type="url" id="url-input" placeholder="https://example.com/photo.jpg" style="flex:1">
-    <button class="primary" id="url-btn">Fetch &amp; Encrypt</button>
-  </div>
+    <header class="topbar">
+      <div class="topbar-left">
+        <h1>Your Vault</h1>
+        <p>End-to-end encrypted, self-hosted, single-user.</p>
+      </div>
+      <div class="topbar-right">
+        <span id="session-countdown"></span>
+        <button class="ghost" id="lock-btn" title="Lock the vault immediately">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          Lock now
+        </button>
+      </div>
+    </header>
 
-  <div class="progress" id="prog"><div class="progress-bar" id="bar"></div></div>
-  <div class="status" id="up-status"></div>
-</div>
+    <div class="grid">
 
-<div class="card">
-  <div class="row" style="margin-bottom:12px">
-    <span class="card-title" style="margin:0;flex:1">Files</span>
-    <button class="ghost" id="reveal-btn" title="Decrypt filenames for all listed files">Reveal Names</button>
-    <button class="ghost" id="refresh-btn" title="Reload file list">↺ Refresh</button>
-  </div>
-  <p id="empty-msg">No files uploaded yet.</p>
-  <ul id="file-list"></ul>
-</div>
+      <!-- Password card -->
+      <section class="card">
+        <div class="card-head">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          </div>
+          <div class="card-title-group">
+            <h2 class="card-title">Master password</h2>
+            <span class="card-sub">Used to derive your encryption key</span>
+          </div>
+          <div class="card-actions">
+            <button class="ghost icon-btn" id="vkb-btn" title="Virtual keyboard (shuffled on each open)" aria-label="Virtual keyboard">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="14" rx="2" ry="2"/><line x1="6" y1="10" x2="6" y2="10"/><line x1="10" y1="10" x2="10" y2="10"/><line x1="14" y1="10" x2="14" y2="10"/><line x1="18" y1="10" x2="18" y2="10"/><line x1="6" y1="14" x2="6" y2="14"/><line x1="10" y1="14" x2="10" y2="14"/><line x1="14" y1="14" x2="14" y2="14"/><line x1="18" y1="14" x2="18" y2="14"/><line x1="7" y1="18" x2="17" y2="18"/></svg>
+            </button>
+          </div>
+        </div>
+        <input type="password" id="pw" placeholder="Enter your master password" autocomplete="off" spellcheck="false">
+        <div id="pw-strength-wrap">
+          <div id="pw-strength-track"><div id="pw-strength-bar"></div></div>
+          <div id="pw-strength-label"></div>
+        </div>
+        <div id="vkb-panel"></div>
+        <div id="vkb-counter"></div>
+      </section>
 
-<div class="card" id="trash-card" style="display:none">
-  <div class="row" style="margin-bottom:12px">
-    <span class="card-title" style="margin:0;flex:1">Trash</span>
-    <button class="ghost" id="trash-refresh-btn" title="Reload trash">&#8635; Refresh</button>
-  </div>
-  <p id="trash-empty-msg" style="color:var(--muted);padding:6px 0;font-size:12px">Trash is empty.</p>
-  <ul id="trash-list" style="list-style:none"></ul>
+      <!-- Upload card -->
+      <section class="card">
+        <div class="card-head">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </div>
+          <div class="card-title-group">
+            <h2 class="card-title">New upload</h2>
+            <span class="card-sub">Encrypt locally, then store</span>
+          </div>
+        </div>
+
+        <input type="file" id="picker" multiple>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="upload-btn" style="flex:1;justify-content:center">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            Encrypt &amp; upload
+          </button>
+        </div>
+
+        <div class="divider-text">or fetch from URL</div>
+
+        <label for="url-input">Source URL</label>
+        <div class="row" style="margin-top:4px;gap:8px">
+          <input type="url" id="url-input" placeholder="https://example.com/photo.jpg" style="flex:1;min-width:0">
+          <button class="primary" id="url-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/></svg>
+            Fetch
+          </button>
+        </div>
+
+        <div class="progress" id="prog"><div class="progress-bar" id="bar"></div></div>
+        <div class="status" id="up-status"></div>
+      </section>
+
+      <!-- Files card -->
+      <section class="card span-full">
+        <div class="card-head">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          </div>
+          <div class="card-title-group">
+            <h2 class="card-title">Files</h2>
+            <span class="card-sub">Click View to decrypt &amp; preview</span>
+          </div>
+          <div class="card-actions">
+            <button class="ghost" id="reveal-btn" title="Decrypt filenames for all listed files">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              Reveal names
+            </button>
+            <button class="ghost icon-btn" id="refresh-btn" title="Reload file list" aria-label="Refresh">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            </button>
+          </div>
+        </div>
+        <p id="empty-msg">No files uploaded yet.</p>
+        <ul id="file-list"></ul>
+      </section>
+
+      <!-- Trash card -->
+      <section class="card span-full" id="trash-card" style="display:none">
+        <div class="card-head">
+          <div class="card-icon" style="background:var(--danger-soft);border-color:rgba(239,85,114,0.22);color:var(--danger)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+          </div>
+          <div class="card-title-group">
+            <h2 class="card-title">Trash</h2>
+            <span class="card-sub">Auto-purged after 7 days</span>
+          </div>
+          <div class="card-actions">
+            <button class="ghost icon-btn" id="trash-refresh-btn" title="Reload trash" aria-label="Refresh trash">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            </button>
+          </div>
+        </div>
+        <p id="trash-empty-msg">Trash is empty.</p>
+        <ul id="trash-list"></ul>
+      </section>
+
+    </div>
+  </main>
 </div>
 
 <!-- Viewer -->
@@ -450,7 +1129,10 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   <div id="vbox">
     <div id="vhead">
       <span id="vname">…</span>
-      <button id="vclose">Close</button>
+      <button id="vclose" class="ghost">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        Close
+      </button>
     </div>
     <div id="vloading">Decrypting…</div>
     <div id="vcontent"></div>
