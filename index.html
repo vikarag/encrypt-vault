@@ -829,28 +829,12 @@ async function unlockVault() {
   const lockErr = document.getElementById('lock-err');
   const btn     = document.getElementById('lock-unlock-btn');
   if (!lockPw) { lockErr.textContent = 'Enter your password.'; return; }
-  btn.disabled = true;
-  lockErr.textContent = '';
-
-  const fileIds = [...document.querySelectorAll('#file-list li .fname')]
-                    .map(el => el.title).filter(Boolean);
-  if (fileIds.length > 0) {
-    try {
-      await fetchMeta(fileIds[0], lockPw);
-    } catch (e) {
-      btn.disabled = false;
-      lockErr.textContent = e.message === 'WRONG_PASSWORD' ? 'Wrong password.' : `Error: ${e.message}`;
-      return;
-    }
-  }
-
   document.getElementById('pw').value = lockPw;
   document.getElementById('lock-pw').value = '';
   document.getElementById('vault-lock-overlay').classList.remove('locked');
   updateStrengthBar(lockPw);
   updateSessionUI();
   resetSessionTimer();
-  btn.disabled = false;
   await loadFiles();
   loadTrash();
 }
