@@ -839,6 +839,7 @@ async function loadTrash() {
   const list  = document.getElementById('trash-list');
   const empty = document.getElementById('trash-empty-msg');
   card.style.display = files.length ? '' : 'none';
+  empty.style.display = files.length ? 'none' : '';
   list.innerHTML = '';
   for (const item of files) {
     const { id, trashed_at } = item;
